@@ -5,7 +5,18 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0d10">
 <title>Titulky z TV – čítačka</title>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Titulky">
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script>
+  // záloha: ak lokálna kópia chýba, načíta sa z CDN
+  window.TESS_LOCAL = typeof Tesseract !== 'undefined';
+  if (!window.TESS_LOCAL) document.write('<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>');
+</script>
 <style>
   :root{--bg:#0b0d10;--panel:#151a20;--line:#252c35;--txt:#e9edf2;--mut:#8a96a3;--acc:#3ddc97;--warn:#ffb547;--err:#ff6b6b}
   *{box-sizing:border-box}
@@ -59,6 +70,10 @@
   .chrow .hd .sw{width:14px;height:14px;border-radius:50%;border:1px solid #555}
   .chrow .hd button{flex:0 0 auto;min-width:0;padding:6px 10px;font-size:13px;margin-left:auto}
   .chrow label{font-size:13px;color:var(--mut);display:flex;justify-content:space-between}
+  #install{display:none;margin:0 12px 8px;padding:10px 12px;background:var(--panel);border:1px solid var(--acc);border-radius:10px;font-size:14px;align-items:center;gap:10px}
+  #install.on{display:flex}
+  #install span{flex:1}
+  #install button{flex:0 0 auto;min-width:0;padding:8px 12px}
   #blk{position:fixed;inset:0;background:#000;z-index:9999;display:none;touch-action:none;user-select:none;-webkit-user-select:none}
   #blk.on{display:block}
   #blkHint{position:absolute;top:45%;left:0;right:0;text-align:center;color:#2a2a2a;font-size:16px;opacity:0;transition:opacity .3s}
@@ -73,6 +88,8 @@
   <div class="dot" id="dot"></div>
   <h1>Titulky z TV → reč</h1>
 </header>
+
+<div id="install"><span id="installTxt"></span><button class="pri" id="installBtn" hidden>Pridať</button><button id="installX" aria-label="Zavrieť">✕</button></div>
 
 <div class="cam" id="cam">
   <video id="video" playsinline muted></video>
@@ -579,7 +596,16 @@
     if (worker && workerLang === S.ocrLang) return;
     if (worker) { try { await worker.terminate(); } catch (e) {} worker = null; }
     setStatus('Načítavam rozpoznávanie textu… (prvýkrát to môže trvať pár sekúnd)');
-    worker = await Tesseract.createWorker(S.ocrLang, 1);
+    const base = new URL('vendor/tesseract', location.href).href;
+    const local = { workerPath: base + '/worker.min.js', corePath: base };
+    if (S.ocrLang === 'eng') local.langPath = base;   // lokálne je iba angličtina, ostatné jazyky z CDN
+    try {
+      if (!window.TESS_LOCAL) throw new Error('bez lokálnej kópie');
+      worker = await Tesseract.createWorker(S.ocrLang, 1, local);
+    } catch (e) {
+      console.warn('Lokálny Tesseract zlyhal, používam CDN', e);
+      worker = await Tesseract.createWorker(S.ocrLang, 1);
+    }
     await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
     workerLang = S.ocrLang;
   }
@@ -1127,6 +1153,34 @@
   ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => blk.addEventListener(ev, () => clearTimeout(pressT)));
   blk.addEventListener('contextmenu', e => e.preventDefault());
   $('blackBtn').onclick = enterBlack;
+
+  // ---------- PWA: inštalácia + service worker ----------
+  if ('serviceWorker' in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+  }
+  (() => {
+    const box = $('install'), txt = $('installTxt'), btn = $('installBtn');
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.matchMedia('(display-mode: fullscreen)').matches || navigator.standalone;
+    let dismissed = false;
+    try { dismissed = localStorage.getItem('titulky-install-x') === '1'; } catch (e) {}
+    if (standalone || dismissed) return;
+    let deferred = null;
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault(); deferred = e;
+      txt.textContent = 'Pridaj aplikáciu na plochu – rýchlejší štart a celá obrazovka.';
+      btn.hidden = false; box.classList.add('on');
+    });
+    btn.onclick = async () => {
+      if (!deferred) return;
+      deferred.prompt(); try { await deferred.userChoice; } catch (e) {}
+      deferred = null; box.classList.remove('on');
+    };
+    if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+      txt.textContent = 'Na plochu: ťukni na Zdieľať ⬆️ a potom „Pridať na plochu“.';
+      box.classList.add('on');
+    }
+    $('installX').onclick = () => { box.classList.remove('on'); try { localStorage.setItem('titulky-install-x', '1'); } catch (e) {} };
+  })();
 
   // ---------- hlavná slučka ----------
   let lastText = '', running = false, timer = null, frames = 0, fpsT = performance.now();
