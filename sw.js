@@ -36,13 +36,13 @@ self.addEventListener('fetch', e => {
   const req = e.request, url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
 
-  const isPage = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('index.html');
+  const isPage = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('index.html') || url.pathname.endsWith('version.js');
   if (isPage) {
     // stránka: najprv sieť (aby prišli aktualizácie), potom cache
     e.respondWith((async () => {
       try {
         const r = await fetch(req);
-        if (r.ok) { const c = await caches.open(CACHE); c.put('index.html', r.clone()); }
+        if (r.ok) { const c = await caches.open(CACHE); c.put(req.mode === 'navigate' ? 'index.html' : req, r.clone()); }
         return r;
       } catch (err) {
         return (await caches.match(req, { ignoreSearch: true })) || (await caches.match('index.html')) || Response.error();

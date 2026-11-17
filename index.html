@@ -1256,7 +1256,16 @@
   $('ver').textContent = 'verzia ' + (self.APP_VERSION || '–');
   // ---------- PWA: inštalácia + service worker ----------
   if ('serviceWorker' in navigator && window.isSecureContext) {
-    navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then(reg => reg.update().catch(() => {}))
+      .catch(e => console.warn('SW', e));
+    // keď prevezme kontrolu nová verzia, obnov stránku (iba raz)
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded || running) return;
+      reloaded = true; location.reload();
+    });
   }
   (() => {
     const box = $('install'), txt = $('installTxt'), btn = $('installBtn');
