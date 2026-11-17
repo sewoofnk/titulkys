@@ -285,7 +285,7 @@
   const prev = $('prev'), pctx = prev.getContext('2d');
 
   // ---------- nastavenia ----------
-  const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 700,
+  const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 500,
     ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
     fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0', engine: 'neural', nvoice: '',
     translator: 'ai', vision: false, glossary: '', corners: null, srcLang: '',
@@ -775,7 +775,7 @@
       if (an.empty) return 'empty';
     }
     if ((S.skipSame || visionOn()) && an.same) return 'same';
-    const scale = Math.max(1, Math.min(2.5, 1400 / sw));
+    const scale = Math.max(1, Math.min(2, 1000 / sw));
     work.width = Math.round(sw * scale); work.height = Math.round(sh * scale);
     wctx.imageSmoothingEnabled = true;
     wctx.drawImage(img, sx, sy, sw, sh, 0, 0, work.width, work.height);
@@ -864,6 +864,8 @@
       if (t.length > candidate.length) candidate = t;
     } else {
       candidate = t; candHits = 1;
+      // nový text: preklad začni hneď, po potvrdení už bude hotový
+      if (!lastAccepted || sim(lastAccepted, t) < 0.7) translate(t).catch(() => {});
     }
     if (candHits >= S.stable && (!lastAccepted || sim(lastAccepted, candidate) < 0.7)) {
       lastAccepted = candidate;
@@ -929,8 +931,17 @@
     console.warn(e);
   }
 
-  // vráti { tr, fixed?, skip? }
-  async function translate(text) {
+  // vráti { tr, fixed?, skip? } – rovnaký text sa neprekladá dvakrát súčasne
+  const inflight = new Map();
+  function translate(text) {
+    const key = S.translator + '|' + srcCode() + '|' + S.target + '|' + text;
+    if (inflight.has(key)) return inflight.get(key);
+    const p = translateRaw(text).finally(() => setTimeout(() => inflight.delete(key), 0));
+    inflight.set(key, p);
+    if (inflight.size > 50) inflight.delete(inflight.keys().next().value);
+    return p;
+  }
+  async function translateRaw(text) {
     const vt = visionTr.get(text);
     if (vt) { visionTr.delete(text); return vt; }
     const key = S.translator + '|' + srcCode() + '|' + S.target + '|' + text;
@@ -1336,7 +1347,9 @@
       }
     }
     const dt = performance.now() - t0;
-    timer = setTimeout(loop, Math.max(30, S.interval - dt));
+    // keď sa niečo deje (nový text čaká na potvrdenie), ďalšiu snímku sprav hneď
+    const busy = candidate && candHits > 0 && candHits < S.stable;
+    timer = setTimeout(loop, busy ? 120 : Math.max(30, S.interval - dt));
   }
 
   const startBtn = $('startBtn');
