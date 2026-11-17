@@ -15,7 +15,7 @@
 <script>
   // záloha: ak lokálna kópia chýba, načíta sa z CDN
   window.TESS_LOCAL = typeof Tesseract !== 'undefined';
-  if (!window.TESS_LOCAL) document.write('<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>');
+  if (!window.TESS_LOCAL) document.write('<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"><' + '/script>');
 </script>
 <style>
   :root{--bg:#0b0d10;--panel:#151a20;--line:#252c35;--txt:#e9edf2;--mut:#8a96a3;--acc:#3ddc97;--warn:#ffb547;--err:#ff6b6b}
@@ -991,7 +991,8 @@
     const v = pickVoice();
     if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = S.target === 'sk' ? 'sk-SK' : 'cs-CZ'; }
     u.rate = Math.max(0.1, Math.min(10, S.rate * o.rate)); u.pitch = Math.max(0, Math.min(2, 1 + o.pitch / 100)); u.volume = 1;
-    u.onend = u.onerror = () => {
+    u.onend = u.onerror = ev => {
+      if (ev && ev.error && ev.error !== 'canceled' && ev.error !== 'interrupted') setStatus('Chyba hlasu: ' + ev.error, 'err');
       if (currentUtt !== u) return;
       currentUtt = null;
       if (pendingText) { const p = pendingText, pc = pendingCh; pendingText = null; sayNow(p, pc); }
@@ -1066,7 +1067,7 @@
     } catch (e) {
       if (tok === nTok) {
         neuralOffUntil = performance.now() + 30000; // 30 s nezdržuj ďalšími pokusmi
-        setStatus('Neurónový hlas nedostupný – používam systémový.', 'warn');
+        setStatus('Neurónový hlas nedostupný (' + (e && e.message || e) + ') – používam systémový.', 'warn');
         sayNow(text, ch);
       }
     } finally {
@@ -1086,7 +1087,7 @@
     if ((!S.speak && !force) || !text) return;
     lastSay = { text, ch };
     if (useNeural()) { speakNeural(text, ch); return; }
-    if (!synth) return;
+    if (!synth) { setStatus('Tento prehliadač nevie čítať nahlas.', 'err'); return; }
     if (synth.speaking || synth.pending || currentUtt) {
       if (S.interrupt) {
         pendingText = null; currentUtt = null; synth.cancel();
@@ -1132,6 +1133,7 @@
   $('testBtn').onclick = () => {
     unlockSpeech();
     neuralOffUntil = 0;
+    setStatus('Skúšam hlas… (' + (S.engine === 'neural' ? 'neurónový, pri zlyhaní systémový' : 'systémový') + ')');
     replay(S.target === 'sk'
       ? 'Ahoj, takto budem čítať titulky z hry.'
       : 'Ahoj, takhle budu číst titulky ze hry.');
