@@ -72,7 +72,8 @@
   #blkHint.show{opacity:1}
   #blkDot{position:absolute;top:calc(env(safe-area-inset-top) + 14px);right:14px;width:10px;height:10px;border-radius:50%;background:#000;transition:background .15s}
   #blkDot.flash{background:#3a3a3a}
-  #blkTxt{position:absolute;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 18px);text-align:center;color:#333;font-size:18px;line-height:1.3}
+  #blkTxt{position:absolute;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 24px);text-align:center;color:#8a96a3;font-size:var(--fs,26px);font-weight:600;line-height:1.3;display:none}
+  #blk.subs #blkTxt{display:block}
 </style>
 </head>
 <body>
@@ -101,6 +102,7 @@
   <button id="voiceBtn">🔊 Hlas zap.</button>
   <button id="repeatBtn">↻ Zopakuj</button>
   <button id="blackBtn" disabled>🌑 Čierna obrazovka</button>
+  <button id="blackSubsBtn">📝 Titulky na čiernej: vyp</button>
 </div>
 <div id="status">Pripravené.</div>
 
@@ -154,7 +156,6 @@
       <select id="blackStyle">
         <option value="black">Úplne čierna</option>
         <option value="dot">Tlmená bodka pri novom titulku</option>
-        <option value="dim">Tlmené titulky dole</option>
       </select>
     </div>
     <div class="row">
@@ -278,10 +279,11 @@
   // ---------- nastavenia ----------
   const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 500,
     ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
-    fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0', engine: 'google', nvoice: '',
+    fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', blackSubs: false, autoBlack: '0', engine: 'google', nvoice: '',
     translator: 'ai', vision: false, glossary: '', corners: null, srcLang: '' };
   let S = { ...DEF };
   try { Object.assign(S, JSON.parse(localStorage.getItem('titulky-set') || '{}')); } catch (e) {}
+  if (S.blackStyle === 'dim') { S.blackStyle = 'black'; S.blackSubs = true; }   // staré „tlmené titulky“
   delete S.byChar; delete S.chars;   // staré nastavenia hlasov postáv (funkcia bola odstránená)
 
   const NVOICES_ALL = {
@@ -1179,7 +1181,8 @@
   }
   async function enterBlack() {
     if (blackOn || !running) return;
-    blackOn = true; blk.classList.add('on'); $('blkTxt').textContent = '';
+    blackOn = true; blk.classList.add('on');
+    $('blkTxt').textContent = lastSay || '';
     try { if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen(); } catch (e) {}
     keepAwake();
   }
@@ -1192,10 +1195,17 @@
     if (!blackOn) return;
     if (S.blackStyle === 'dot') {
       const d = $('blkDot'); d.classList.add('flash'); setTimeout(() => d.classList.remove('flash'), 400);
-    } else if (S.blackStyle === 'dim') {
-      $('blkTxt').textContent = tr;
     }
+    $('blkTxt').textContent = tr;
   }
+  // prepínač: titulky na čiernej obrazovke zap/vyp
+  function paintBlackSubs() {
+    $('blackSubsBtn').textContent = '📝 Titulky na čiernej: ' + (S.blackSubs ? 'zap' : 'vyp');
+    $('blackSubsBtn').classList.toggle('off', !S.blackSubs);
+    blk.classList.toggle('subs', !!S.blackSubs);
+  }
+  $('blackSubsBtn').onclick = () => { S.blackSubs = !S.blackSubs; save(); paintBlackSubs(); };
+  paintBlackSubs();
   blk.addEventListener('pointerdown', e => {
     e.preventDefault();
     const now = performance.now();
