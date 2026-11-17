@@ -168,7 +168,35 @@
         <option value="spa">Španielčina</option>
         <option value="ita">Taliančina</option>
         <option value="rus">Ruština</option>
+        <option value="ces">Čeština</option>
+        <option value="slk">Slovenčina</option>
+        <option value="por">Portugalčina</option>
+        <option value="nld">Holandčina</option>
+        <option value="tur">Turečtina</option>
+        <option value="ukr">Ukrajinčina</option>
+        <option value="hun">Maďarčina</option>
+        <option value="ron">Rumunčina</option>
+        <option value="swe">Švédčina</option>
+        <option value="jpn">Japončina</option>
+        <option value="kor">Kórejčina</option>
+        <option value="chi_sim">Čínština (zjednodušená)</option>
+        <option value="ara">Arabčina</option>
       </select>
+    </div>
+    <div class="row">
+      <label>Z akého jazyka sa prekladá (pre istotu ručne)</label>
+      <select id="srcLang">
+        <option value="">Podľa jazyka titulkov (predvolené)</option>
+        <option value="auto">Automaticky rozpoznať</option>
+        <option value="en">Angličtina</option><option value="pl">Poľština</option><option value="de">Nemčina</option>
+        <option value="fr">Francúzština</option><option value="es">Španielčina</option><option value="it">Taliančina</option>
+        <option value="ru">Ruština</option><option value="cs">Čeština</option><option value="sk">Slovenčina</option>
+        <option value="pt">Portugalčina</option><option value="nl">Holandčina</option><option value="tr">Turečtina</option>
+        <option value="uk">Ukrajinčina</option><option value="hu">Maďarčina</option><option value="ro">Rumunčina</option>
+        <option value="sv">Švédčina</option><option value="ja">Japončina</option><option value="ko">Kórejčina</option>
+        <option value="zh-CN">Čínština</option><option value="ar">Arabčina</option>
+      </select>
+      <div class="note">Mení sa len jazyk, z ktorého sa preklad robí. Rozpoznávanie textu z obrazu sa riadi voľbou „Jazyk titulkov v hre“.</div>
     </div>
     <div class="row">
       <label>Prekladač</label>
@@ -252,7 +280,7 @@
   const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 700,
     ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
     fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0', engine: 'neural', nvoice: '',
-    translator: 'ai', vision: false, glossary: '', corners: null,
+    translator: 'ai', vision: false, glossary: '', corners: null, srcLang: '',
     byChar: true,
     chars: {
       michael:  { hue: 210, voice: '', rate: 0.95, pitch: -12 },
@@ -344,7 +372,7 @@
       save();
     });
   });
-  ['mode', 'ocrLang', 'target', 'blackStyle', 'autoBlack', 'engine', 'translator'].forEach(k => {
+  ['mode', 'ocrLang', 'target', 'blackStyle', 'autoBlack', 'engine', 'translator', 'srcLang'].forEach(k => {
     $(k).value = S[k];
     $(k).addEventListener('change', async () => {
       S[k] = $(k).value; save();
@@ -818,7 +846,9 @@
 
   // ---------- preklad ----------
   const cache = new Map();
-  const SRC = { eng: 'en', pol: 'pl', deu: 'de', fra: 'fr', spa: 'es', ita: 'it', rus: 'ru' };
+  const SRC = { eng: 'en', pol: 'pl', deu: 'de', fra: 'fr', spa: 'es', ita: 'it', rus: 'ru', ces: 'cs', slk: 'sk', por: 'pt',
+    nld: 'nl', tur: 'tr', ukr: 'uk', hun: 'hu', ron: 'ro', swe: 'sv', jpn: 'ja', kor: 'ko', chi_sim: 'zh-CN', ara: 'ar' };
+  const srcCode = () => S.srcLang || SRC[S.ocrLang] || 'en';
   async function fetchJson(url, ms = 6000) {
     const ac = new AbortController();
     const to = setTimeout(() => ac.abort(), ms);
@@ -842,7 +872,7 @@
       return await r.json();
     } finally { clearTimeout(to); }
   }
-  const aiBase = () => ({ target: S.target, source: SRC[S.ocrLang] || 'en', glossary: S.glossary, context: ctxHist.slice(-5) });
+  const aiBase = () => ({ target: S.target, source: srcCode(), glossary: S.glossary, context: ctxHist.slice(-5) });
   function aiActive() { return S.translator === 'ai' && performance.now() > aiOffUntil; }
   function aiFailed(e) {
     aiOffUntil = performance.now() + 30000;
@@ -854,7 +884,7 @@
   async function translate(text) {
     const vt = visionTr.get(text);
     if (vt) { visionTr.delete(text); return vt; }
-    const key = S.translator + '|' + S.target + '|' + text;
+    const key = S.translator + '|' + srcCode() + '|' + S.target + '|' + text;
     if (cache.has(key)) return cache.get(key);
     if (aiActive()) {
       try {
@@ -880,7 +910,7 @@
   }
 
   async function googleTranslate(text) {
-    const src = SRC[S.ocrLang] || 'en';
+    const src = srcCode();
     let out = null;
     try {
       const j = await fetchJson('https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=' + src +
@@ -888,7 +918,7 @@
       out = (j[0] || []).map(x => x[0]).join('').trim();
     } catch (e) {
       try {
-        const j = await fetchJson('https://api.mymemory.translated.net/get?langpair=' + src + '|' + S.target +
+        const j = await fetchJson('https://api.mymemory.translated.net/get?langpair=' + (src === 'auto' ? 'Autodetect' : src) + '|' + S.target +
           '&q=' + encodeURIComponent(text));
         out = (j.responseData && j.responseData.translatedText || '').trim();
       } catch (e2) { out = null; }
