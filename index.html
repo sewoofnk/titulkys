@@ -54,6 +54,11 @@
   .mk{position:absolute;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:var(--warn);border:2px solid #000;pointer-events:none;color:#000;font-size:10px;font-weight:700;text-align:center;line-height:12px}
   .cam.marking{outline:2px dashed var(--warn)}
   .two{display:flex;gap:8px}
+  .chrow{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:8px;display:grid;gap:6px}
+  .chrow .hd{display:flex;align-items:center;gap:8px;font-weight:600}
+  .chrow .hd .sw{width:14px;height:14px;border-radius:50%;border:1px solid #555}
+  .chrow .hd button{flex:0 0 auto;min-width:0;padding:6px 10px;font-size:13px;margin-left:auto}
+  .chrow label{font-size:13px;color:var(--mut);display:flex;justify-content:space-between}
   #blk{position:fixed;inset:0;background:#000;z-index:9999;display:none;touch-action:none;user-select:none;-webkit-user-select:none}
   #blk.on{display:block}
   #blkHint{position:absolute;top:45%;left:0;right:0;text-align:center;color:#2a2a2a;font-size:16px;opacity:0;transition:opacity .3s}
@@ -186,6 +191,11 @@
       <div class="note" id="voiceNote"></div>
     </div>
     <div class="row"><label>Rýchlosť reči <b id="rateV"></b></label><input type="range" id="rate" min="0.7" max="1.8" step="0.05"></div>
+    <label class="chk"><input type="checkbox" id="byChar"> Iný hlas pre každú postavu (podľa farby titulkov)</label>
+    <div class="row" id="charBox">
+      <div class="note">Zistená farba titulkov: <span id="curCol" style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:middle;background:#fff;border:1px solid #555"></span> <b id="curColT">—</b>. Keď titulok svieti farbou postavy, stlač pri nej „Nauč farbu“.</div>
+      <div id="charRows"></div>
+    </div>
     <label class="chk"><input type="checkbox" id="interrupt"> Nový titulok preruší starý (inak počká)</label>
     <button id="testBtn">🔈 Vyskúšať hlas</button>
     <div class="row"><label>Veľkosť textu <b id="fsV"></b></label><input type="range" id="fs" min="16" max="48" step="1"></div>
@@ -225,9 +235,79 @@
   const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 700,
     ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
     fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0', engine: 'neural', nvoice: '',
-    translator: 'ai', vision: false, glossary: '', corners: null };
+    translator: 'ai', vision: false, glossary: '', corners: null,
+    byChar: true,
+    chars: {
+      michael:  { hue: 210, voice: '', rate: 0.95, pitch: -12 },
+      franklin: { hue: 125, voice: '', rate: 1.05, pitch: 0 },
+      trevor:   { hue: 30,  voice: '', rate: 1.12, pitch: 12 },
+      other:    { hue: null, voice: '', rate: 1, pitch: 0 }
+    } };
   let S = { ...DEF };
   try { Object.assign(S, JSON.parse(localStorage.getItem('titulky-set') || '{}')); } catch (e) {}
+  S.chars = Object.fromEntries(Object.keys(DEF.chars).map(k => [k, { ...DEF.chars[k], ...((S.chars || {})[k] || {}) }]));
+
+  const NVOICES_ALL = {
+    sk: [['sk-SK-LukasNeural', 'Lukáš (muž)'], ['sk-SK-ViktoriaNeural', 'Viktória (žena)']],
+    cs: [['cs-CZ-AntoninNeural', 'Antonín (muž)'], ['cs-CZ-VlastaNeural', 'Vlasta (žena)']]
+  };
+  // ---------- postavy podľa farby titulkov ----------
+  const CH = { michael: { label: 'Michael' }, franklin: { label: 'Franklin' }, trevor: { label: 'Trevor' }, other: { label: 'Ostatní (biela)' } };
+  const HUE_TOL = 28;
+  let lastCol = null;
+  function hueOf(r, g, b, mx, mn) {
+    const d = mx - mn; if (!d) return 0;
+    let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h *= 60; return h < 0 ? h + 360 : h;
+  }
+  function classify(col) {
+    if (!col) return 'other';
+    if (col.hue == null) return 'other';
+    let best = 'other', bd = HUE_TOL;
+    for (const k of Object.keys(S.chars)) {
+      const h = S.chars[k].hue; if (h == null) continue;
+      let dd = Math.abs(col.hue - h); if (dd > 180) dd = 360 - dd;
+      if (dd < bd) { bd = dd; best = k; }
+    }
+    return best;
+  }
+  function charOpts(ch) {
+    const c = (S.byChar && ch && S.chars[ch]) || null;
+    return c ? { voice: c.voice, rate: c.rate, pitch: c.pitch } : { voice: '', rate: 1, pitch: 0 };
+  }
+  const hsl = h => h == null ? '#fff' : 'hsl(' + Math.round(h) + ',85%,60%)';
+  function paintCurCol() {
+    if (!$('setDet').open || !lastCol) return;
+    $('curCol').style.background = hsl(lastCol.hue);
+    $('curColT').textContent = lastCol.hue == null ? 'biela' : Math.round(lastCol.hue) + '° (' + CH[classify(lastCol)].label + ')';
+  }
+  function fillCharUI() {
+    const box = $('charRows'); box.innerHTML = '';
+    const vs = NVOICES_ALL[S.target] || NVOICES_ALL.sk;
+    Object.keys(CH).forEach(k => {
+      const c = S.chars[k], row = document.createElement('div'); row.className = 'chrow';
+      row.innerHTML = '<div class="hd"><span class="sw"></span><span>' + CH[k].label + '</span><button type="button">Nauč farbu</button></div>' +
+        '<select></select>' +
+        '<label>Rýchlosť <b class="rv"></b></label><input type="range" min="0.6" max="1.6" step="0.05" class="r">' +
+        '<label>Výška hlasu <b class="pv"></b></label><input type="range" min="-30" max="30" step="1" class="p">';
+      const sel = row.querySelector('select'), r = row.querySelector('.r'), pr = row.querySelector('.p');
+      sel.innerHTML = '<option value="">Základný neurónový hlas</option>' + vs.map(([v, n]) => '<option value="' + v + '">' + n + '</option>').join('');
+      sel.value = vs.some(x => x[0] === c.voice) ? c.voice : ''; c.voice = sel.value;
+      r.value = c.rate; pr.value = c.pitch;
+      const paint = () => { row.querySelector('.rv').textContent = Number(c.rate).toFixed(2) + '×'; row.querySelector('.pv').textContent = (c.pitch > 0 ? '+' : '') + c.pitch + ' %';
+        row.querySelector('.sw').style.background = hsl(c.hue); };
+      paint();
+      sel.onchange = () => { c.voice = sel.value; save(); };
+      r.oninput = () => { c.rate = Number(r.value); paint(); save(); };
+      pr.oninput = () => { c.pitch = Number(pr.value); paint(); save(); };
+      row.querySelector('button').onclick = () => {
+        if (!lastCol) { setStatus('Najprv spusti a nechaj zobraziť titulok danej postavy.', 'warn'); return; }
+        c.hue = lastCol.hue; save(); paint();
+        setStatus('Farba uložená pre: ' + CH[k].label + '.');
+      };
+      box.appendChild(row);
+    });
+  }
   const save = () => { try { localStorage.setItem('titulky-set', JSON.stringify(S)); } catch (e) {} };
 
   const fmt = {
@@ -252,10 +332,12 @@
     $(k).addEventListener('change', async () => {
       S[k] = $(k).value; save();
       if (k === 'engine') { stopAll(); paintEngine(); }
-      if (k === 'target') { S.voice = ''; S.nvoice = ''; save(); fillVoices(); fillNVoices(); cache.clear(); }
+      if (k === 'target') { S.voice = ''; S.nvoice = ''; save(); fillVoices(); fillNVoices(); fillCharUI(); cache.clear(); }
       if (k === 'ocrLang' && running) { await initOCR(); }
     });
   });
+  $('byChar').checked = S.byChar;
+  $('byChar').addEventListener('change', () => { S.byChar = $('byChar').checked; save(); });
   $('vision').checked = S.vision;
   $('vision').addEventListener('change', () => { S.vision = $('vision').checked; save(); });
   $('glossary').value = S.glossary;
@@ -538,7 +620,20 @@
     const t = Math.max(100, Math.min(245, otsu(hist, n)));
     let light = 0; for (let i = t + 1; i < 256; i++) light += hist[i];
     const empty = (pct(0.995) - pct(0.5) < 50) || light / n < 0.002;
-    return { empty, same, thr: t };
+    // dominantná farba textu (svetlé pixely podľa jasu V = max(R,G,B))
+    let col = { hue: null, sat: 0 };
+    if (!empty && S.mode !== 'dark') {
+      let nl = 0, ns = 0, cx = 0, cy = 0, ss = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2], mx = Math.max(r, g, b);
+        if (mx <= t) continue;
+        nl++;
+        const mn = Math.min(r, g, b), s = (mx - mn) / mx;
+        if (s > 0.3) { ns++; const a = hueOf(r, g, b, mx, mn) * Math.PI / 180; cx += Math.cos(a); cy += Math.sin(a); ss += s; }
+      }
+      if (nl && ns / nl > 0.3) col = { hue: (Math.atan2(cy, cx) * 180 / Math.PI + 360) % 360, sat: ss / ns };
+    }
+    return { empty, same, thr: t, col };
   }
 
   let lastBox = null;
@@ -567,6 +662,7 @@
     if (region !== lastRegion) { lastSig = null; lastRegion = region; }
     lastBox = [img, sx, sy, sw, sh];
     const an = analyze(img, sx, sy, sw, sh);
+    if (!an.empty) { lastCol = an.col; paintCurCol(); }
     let thr = S.thr, mode = S.mode;
     if (mode === 'auto') {
       mode = 'light';
@@ -583,9 +679,17 @@
     if (mode !== 'none') {
       const img = wctx.getImageData(0, 0, work.width, work.height), d = img.data, t = thr;
       const light = mode === 'light';
+      const hs = (S.byChar && light) ? Object.values(S.chars).map(c => c.hue).filter(h => h != null) : [];
       for (let i = 0; i < d.length; i += 4) {
         const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        const isText = light ? l > t : l < t;
+        let isText = light ? l > t : l < t;
+        if (!isText && hs.length) {   // farebný titulok (modrá/zelená/oranžová) môže mať nižší jas
+          const r = d[i], g = d[i + 1], b = d[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+          if (mx > 110 && (mx - mn) / mx > 0.35) {
+            const h = hueOf(r, g, b, mx, mn);
+            for (const x of hs) { let dd = Math.abs(h - x); if (dd > 180) dd = 360 - dd; if (dd < HUE_TOL) { isText = true; break; } }
+          }
+        }
         const v = isText ? 0 : 255;
         d[i] = d[i + 1] = d[i + 2] = v;
       }
@@ -666,15 +770,22 @@
 
   async function accept(orig) {
     const id = ++seq;
+    const ch = S.byChar ? classify(lastCol) : null;
     const res = await translate(orig);
     if (res.skip) return;                 // AI: nezmysel z OCR
     const tr = res.tr, shown = res.fixed || orig;
     ctxHist.push(shown); if (ctxHist.length > 5) ctxHist.shift();
-    addHistory(shown, tr);
+    addHistory(shown, tr, ch);
     if (id !== seq) return; // medzitým prišiel novší titulok
-    $('main').textContent = tr;
+    const mainEl = $('main');
+    mainEl.textContent = '';
+    if (ch && ch !== 'other') {
+      const who = document.createElement('b'); who.textContent = CH[ch].label + ': ';
+      who.style.color = 'var(--acc)'; mainEl.appendChild(who);
+    }
+    mainEl.appendChild(document.createTextNode(tr));
     $('orig').textContent = shown;
-    speak(tr);
+    speak(tr, false, ch);
     blackNotify(tr);
   }
   const ctxHist = [];
@@ -806,25 +917,24 @@
     const name = $('voice').value;
     return voices.find(v => v.name === name) || null;
   }
-  function sayNow(text) {
+  let pendingCh = null, lastSay = null;
+  function sayNow(text, ch) {
+    const o = charOpts(ch);
     const u = new SpeechSynthesisUtterance(text);
     const v = pickVoice();
     if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = S.target === 'sk' ? 'sk-SK' : 'cs-CZ'; }
-    u.rate = S.rate; u.pitch = 1; u.volume = 1;
+    u.rate = Math.max(0.1, Math.min(10, S.rate * o.rate)); u.pitch = Math.max(0, Math.min(2, 1 + o.pitch / 100)); u.volume = 1;
     u.onend = u.onerror = () => {
       if (currentUtt !== u) return;
       currentUtt = null;
-      if (pendingText) { const p = pendingText; pendingText = null; sayNow(p); }
+      if (pendingText) { const p = pendingText, pc = pendingCh; pendingText = null; sayNow(p, pc); }
     };
     currentUtt = u; // držíme referenciu (Chrome inak niekedy nezavolá onend)
     lastSpoken = text;
     synth.speak(u);
   }
   // ---------- neurónový hlas (Azure cez /api/tts) ----------
-  const NVOICES = {
-    sk: [['sk-SK-LukasNeural', 'Lukáš (muž)'], ['sk-SK-ViktoriaNeural', 'Viktória (žena)']],
-    cs: [['cs-CZ-AntoninNeural', 'Antonín (muž)'], ['cs-CZ-VlastaNeural', 'Vlasta (žena)']]
-  };
+  const NVOICES = NVOICES_ALL;
   const audio = new Audio();
   audio.preload = 'auto';
   let nTok = 0, nBusy = false, nPending = null, nResolve = null, neuralOffUntil = 0;
@@ -861,10 +971,11 @@
     pendingText = null; currentUtt = null;
     if (synth) synth.cancel();
   }
-  async function speakNeural(text) {
+  async function speakNeural(text, ch) {
     if (nBusy) {
-      if (S.interrupt) stopNeural(); else { nPending = text; return; }
+      if (S.interrupt) stopNeural(); else { nPending = { text, ch }; return; }
     }
+    const o = charOpts(ch);
     const tok = ++nTok; nBusy = true;
     try {
       const ac = new AbortController();
@@ -873,7 +984,7 @@
       try {
         const r = await fetch('/api/tts', {
           method: 'POST', signal: ac.signal, headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ text, voice: S.nvoice, rate: S.rate, pitch: 0 })
+          body: JSON.stringify({ text, voice: o.voice || S.nvoice, rate: S.rate * o.rate, pitch: o.pitch })
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         blob = await r.blob();
@@ -889,35 +1000,36 @@
       if (tok === nTok) {
         neuralOffUntil = performance.now() + 30000; // 30 s nezdržuj ďalšími pokusmi
         setStatus('Neurónový hlas nedostupný – používam systémový.', 'warn');
-        sayNow(text);
+        sayNow(text, ch);
       }
     } finally {
       if (tok === nTok) {
         nBusy = false;
-        if (nPending) { const p = nPending; nPending = null; speakNeural(p); }
+        if (nPending) { const p = nPending; nPending = null; speakNeural(p.text, p.ch); }
       }
     }
   }
   function useNeural() { return S.engine === 'neural' && performance.now() > neuralOffUntil; }
-  function replay(text) {
+  function replay(text, ch) {
     stopAll();
-    setTimeout(() => speak(text, true), 60);
+    setTimeout(() => speak(text, true, ch), 60);
   }
 
-  function speak(text, force) {
+  function speak(text, force, ch) {
     if ((!S.speak && !force) || !text) return;
-    if (useNeural()) { speakNeural(text); return; }
+    lastSay = { text, ch };
+    if (useNeural()) { speakNeural(text, ch); return; }
     if (!synth) return;
     if (synth.speaking || synth.pending || currentUtt) {
       if (S.interrupt) {
         pendingText = null; currentUtt = null; synth.cancel();
-        setTimeout(() => sayNow(text), 60);
+        setTimeout(() => sayNow(text, ch), 60);
       } else {
-        pendingText = text; // čaká len najnovší
+        pendingText = text; pendingCh = ch; // čaká len najnovší
       }
       return;
     }
-    sayNow(text);
+    sayNow(text, ch);
   }
   function unlockSpeech() {
     // odomknutie zvuku (iPhone): krátke ticho cez <audio>
@@ -948,8 +1060,7 @@
     if (!S.speak) stopAll();
   };
   $('repeatBtn').onclick = () => {
-    const t = $('main').textContent;
-    if (t && t !== '—') replay(t);
+    if (lastSay) replay(lastSay.text, lastSay.ch);
   };
   $('testBtn').onclick = () => {
     unlockSpeech();
@@ -958,14 +1069,14 @@
       ? 'Ahoj, takto budem čítať titulky z hry.'
       : 'Ahoj, takhle budu číst titulky ze hry.');
   };
-  fillNVoices(); paintEngine();
+  fillNVoices(); paintEngine(); fillCharUI();
 
   // ---------- história ----------
-  function addHistory(orig, tr) {
+  function addHistory(orig, tr, ch) {
     const li = document.createElement('li');
-    li.textContent = tr;
+    li.textContent = (ch && CH[ch] && ch !== 'other' ? CH[ch].label + ': ' : '') + tr;
     const sm = document.createElement('small'); sm.textContent = orig; li.appendChild(sm);
-    li.onclick = () => replay(tr);
+    li.onclick = () => replay(tr, ch);
     const h = $('hist'); h.prepend(li);
     while (h.children.length > 40) h.lastChild.remove();
   }
