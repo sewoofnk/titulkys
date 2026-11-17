@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<title>Titulky z TV – čítačka</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  :root{--bg:#0b0d10;--panel:#151a20;--line:#252c35;--txt:#e9edf2;--mut:#8a96a3;--acc:#3ddc97;--warn:#ffb547;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  header{display:flex;align-items:center;gap:8px;padding:10px 12px}
+  header h1{font-size:17px;margin:0;flex:1}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--mut)}
+  .dot.on{background:var(--acc);box-shadow:0 0 8px var(--acc)}
+  .cam{position:relative;margin:0 auto;width:min(100%, calc(42vh * var(--ar,1.7778)));aspect-ratio:var(--ar,1.7778);background:#000;overflow:hidden;touch-action:none;border-radius:10px}
+  .cam video{position:absolute;inset:0;width:100%;height:100%;object-fit:fill}
+  .roi{position:absolute;border:2px solid var(--acc);box-shadow:0 0 0 9999px rgba(0,0,0,.45);border-radius:4px;pointer-events:none}
+  .roi span{position:absolute;top:-22px;left:0;font-size:12px;background:var(--acc);color:#000;padding:1px 6px;border-radius:4px}
+  .camhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--mut);font-size:14px}
+  .out{margin:12px;padding:14px 16px;background:var(--panel);border:1px solid var(--line);border-radius:12px;min-height:110px}
+  #main{font-size:var(--fs,26px);font-weight:600;line-height:1.3;min-height:1.3em}
+  #orig{color:var(--mut);font-size:14px;margin-top:8px}
+  .btns{display:flex;gap:8px;padding:0 12px;flex-wrap:wrap}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--txt);padding:12px 14px;border-radius:10px;flex:1;min-width:90px}
+  button.pri{background:var(--acc);color:#04130c;border-color:var(--acc);font-weight:700}
+  button.stop{background:var(--err);border-color:var(--err);color:#fff}
+  button.off{opacity:.55}
+  #status{padding:8px 14px;font-size:13px;color:var(--mut)}
+  #status.warn{color:var(--warn)} #status.err{color:var(--err)}
+  details{margin:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+  summary{padding:12px 14px;cursor:pointer;font-weight:600}
+  .set{padding:4px 14px 14px;display:grid;gap:12px}
+  .row label{display:flex;justify-content:space-between;font-size:14px;color:var(--mut);margin-bottom:4px}
+  .row label b{color:var(--txt);font-weight:600}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  select{width:100%;font:inherit;padding:10px;border-radius:8px;background:#0f1318;color:var(--txt);border:1px solid var(--line)}
+  .chk{display:flex;align-items:center;gap:10px;font-size:15px}
+  .chk input{width:20px;height:20px;accent-color:var(--acc)}
+  #prev{width:100%;background:#fff;border-radius:6px;image-rendering:pixelated}
+  .raw{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--mut);word-break:break-word}
+  .note{font-size:13px;color:var(--mut)}
+  .note.warn{color:var(--warn)}
+  #hist{list-style:none;margin:0;padding:0 14px 14px;display:grid;gap:8px}
+  #hist li{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:15px}
+  #hist li small{display:block;color:var(--mut);font-size:12px;margin-top:2px}
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="dot"></div>
+  <h1>Titulky z TV → reč</h1>
+</header>
+
+<div class="cam" id="cam">
+  <video id="video" playsinline muted></video>
+  <div class="roi" id="roi"><span>titulky</span></div>
+  <div class="camhint" id="camhint">Stlač „Štart“ a namier kameru na TV.<br>Prstom potom označ oblasť, kde sú titulky.</div>
+</div>
+
+<div class="out">
+  <div id="main">—</div>
+  <div id="orig"></div>
+</div>
+
+<div class="btns">
+  <button class="pri" id="startBtn">▶ Štart</button>
+  <button id="voiceBtn">🔊 Hlas zap.</button>
+  <button id="repeatBtn">↻ Zopakuj</button>
+</div>
+<div id="status">Pripravené.</div>
+
+<details id="setDet">
+  <summary>⚙️ Nastavenia</summary>
+  <div class="set">
+    <div class="row">
+      <label>Spracovaný obraz (takto ho vidí OCR)</label>
+      <canvas id="prev" height="60"></canvas>
+      <div class="raw" id="raw">—</div>
+    </div>
+    <div class="row">
+      <label>Úprava obrazu</label>
+      <select id="mode">
+        <option value="light">Svetlé titulky (biele/žlté) – odporúčané</option>
+        <option value="dark">Tmavé titulky na svetlom pozadí</option>
+        <option value="none">Bez úpravy</option>
+      </select>
+    </div>
+    <div class="row"><label>Prah jasu <b id="thrV"></b></label><input type="range" id="thr" min="60" max="250" step="1"></div>
+    <div class="row" id="zoomRow" hidden><label>Zoom kamery <b id="zoomV"></b></label><input type="range" id="zoom"></div>
+    <div class="row"><label>Oblasť – zhora <b id="topV"></b></label><input type="range" id="top" min="0" max="95" step="1"></div>
+    <div class="row"><label>Oblasť – výška <b id="heightV"></b></label><input type="range" id="height" min="5" max="100" step="1"></div>
+    <div class="row"><label>Oblasť – zľava <b id="leftV"></b></label><input type="range" id="left" min="0" max="95" step="1"></div>
+    <div class="row"><label>Oblasť – šírka <b id="widthV"></b></label><input type="range" id="width" min="5" max="100" step="1"></div>
+    <div class="row">
+      <label>Jazyk titulkov v hre</label>
+      <select id="ocrLang">
+        <option value="eng">Angličtina</option>
+        <option value="pol">Poľština</option>
+        <option value="deu">Nemčina</option>
+        <option value="fra">Francúzština</option>
+        <option value="spa">Španielčina</option>
+        <option value="ita">Taliančina</option>
+        <option value="rus">Ruština</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Preložiť do</label>
+      <select id="target">
+        <option value="sk">Slovenčina</option>
+        <option value="cs">Čeština</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Hlas</label>
+      <select id="voice"></select>
+      <div class="note" id="voiceNote"></div>
+    </div>
+    <div class="row"><label>Rýchlosť reči <b id="rateV"></b></label><input type="range" id="rate" min="0.7" max="1.8" step="0.05"></div>
+    <label class="chk"><input type="checkbox" id="interrupt"> Nový titulok preruší starý (inak počká)</label>
+    <button id="testBtn">🔈 Vyskúšať hlas</button>
+    <div class="row"><label>Veľkosť textu <b id="fsV"></b></label><input type="range" id="fs" min="16" max="48" step="1"></div>
+    <div class="row"><label>Interval snímania <b id="intervalV"></b></label><input type="range" id="interval" min="300" max="2500" step="100"></div>
+    <div class="row"><label>Potvrdenie (počet zhodných snímok) <b id="stableV"></b></label><input type="range" id="stable" min="1" max="4" step="1"></div>
+    <div class="row"><label>Min. istota OCR <b id="minConfV"></b></label><input type="range" id="minConf" min="0" max="90" step="5"></div>
+  </div>
+</details>
+
+<details>
+  <summary>🕘 História</summary>
+  <ul id="hist"></ul>
+</details>
+
+<details>
+  <summary>❓ Tipy</summary>
+  <div class="set note">
+    <div>• Mobil daj na stojan čo najrovnejšie oproti TV a zhasni svetlo za sebou (odlesky kazia čítanie).</div>
+    <div>• Prstom ťahaj po obraze kamery a označ len pás s titulkami. Čím menšia oblasť, tým rýchlejšie a presnejšie.</div>
+    <div>• V náhľade „Spracovaný obraz“ musí byť text čierny na bielom. Ak nie je, posuň „Prah jasu“.</div>
+    <div>• V hre zväčši titulky a zapni ich pozadie, ak to hra umožňuje. Čítanie bude oveľa spoľahlivejšie.</div>
+    <div>• Prirodzenejší hlas: Android → Nastavenia → Prevod textu na reč → Google → stiahni slovenčinu. iPhone → Nastavenia → Prístupnosť → Hovorený obsah → Hlasy → Slovenčina → Laura (vylepšený).</div>
+  </div>
+</details>
+
+<canvas id="work" hidden></canvas>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const video = $('video'), cam = $('cam'), roi = $('roi');
+  const work = $('work'), wctx = work.getContext('2d', { willReadFrequently: true });
+  const prev = $('prev'), pctx = prev.getContext('2d');
+
+  // ---------- nastavenia ----------
+  const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'light', interval: 700,
+    ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
+    fs: 26, stable: 2, minConf: 50 };
+  let S = { ...DEF };
+  try { Object.assign(S, JSON.parse(localStorage.getItem('titulky-set') || '{}')); } catch (e) {}
+  const save = () => { try { localStorage.setItem('titulky-set', JSON.stringify(S)); } catch (e) {} };
+
+  const fmt = {
+    thr: v => v, top: v => v + ' %', height: v => v + ' %', left: v => v + ' %', width: v => v + ' %',
+    rate: v => Number(v).toFixed(2) + '×', fs: v => v + ' px', interval: v => v + ' ms',
+    stable: v => v, minConf: v => v + ' %'
+  };
+  Object.keys(fmt).forEach(k => {
+    const el = $(k);
+    el.value = S[k];
+    $(k + 'V').textContent = fmt[k](S[k]);
+    el.addEventListener('input', () => {
+      S[k] = Number(el.value);
+      $(k + 'V').textContent = fmt[k](S[k]);
+      if (['top', 'height', 'left', 'width'].includes(k)) drawRoi();
+      if (k === 'fs') applyFs();
+      save();
+    });
+  });
+  ['mode', 'ocrLang', 'target'].forEach(k => {
+    $(k).value = S[k];
+    $(k).addEventListener('change', async () => {
+      S[k] = $(k).value; save();
+      if (k === 'target') { S.voice = ''; save(); fillVoices(); cache.clear(); }
+      if (k === 'ocrLang' && running) { await initOCR(); }
+    });
+  });
+  $('interrupt').checked = S.interrupt;
+  $('interrupt').addEventListener('change', () => { S.interrupt = $('interrupt').checked; save(); });
+
+  function applyFs() { document.documentElement.style.setProperty('--fs', S.fs + 'px'); }
+  applyFs();
+
+  function drawRoi() {
+    S.top = Math.min(S.top, 100 - 5); S.left = Math.min(S.left, 100 - 5);
+    const h = Math.min(S.height, 100 - S.top), w = Math.min(S.width, 100 - S.left);
+    roi.style.top = S.top + '%'; roi.style.left = S.left + '%';
+    roi.style.height = h + '%'; roi.style.width = w + '%';
+  }
+  function syncRoiInputs() {
+    ['top', 'height', 'left', 'width'].forEach(k => { $(k).value = S[k]; $(k + 'V').textContent = fmt[k](S[k]); });
+  }
+  drawRoi();
+
+  // ťahanie prstom = nová oblasť
+  let drag = null;
+  cam.addEventListener('pointerdown', e => {
+    const r = cam.getBoundingClientRect();
+    drag = { x: (e.clientX - r.left) / r.width * 100, y: (e.clientY - r.top) / r.height * 100 };
+    cam.setPointerCapture(e.pointerId);
+  });
+  cam.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const r = cam.getBoundingClientRect();
+    const x = Math.max(0, Math.min(100, (e.clientX - r.left) / r.width * 100));
+    const y = Math.max(0, Math.min(100, (e.clientY - r.top) / r.height * 100));
+    const w = Math.abs(x - drag.x), h = Math.abs(y - drag.y);
+    if (w < 3 || h < 2) return;
+    S.left = Math.round(Math.min(x, drag.x)); S.top = Math.round(Math.min(y, drag.y));
+    S.width = Math.max(5, Math.round(w)); S.height = Math.max(5, Math.round(h));
+    drawRoi(); syncRoiInputs();
+  });
+  const endDrag = () => { if (drag) { drag = null; save(); } };
+  cam.addEventListener('pointerup', endDrag);
+  cam.addEventListener('pointercancel', endDrag);
+
+  // ---------- status ----------
+  function setStatus(t, cls = '') { const s = $('status'); s.textContent = t; s.className = cls; }
+
+  // ---------- kamera ----------
+  let stream = null, track = null;
+  async function startCamera() {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+    video.srcObject = stream;
+    await video.play();
+    $('camhint').hidden = true;
+    const ar = (video.videoWidth || 16) / (video.videoHeight || 9);
+    cam.style.setProperty('--ar', ar);
+    track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    try {
+      if (caps.focusMode && caps.focusMode.includes('continuous'))
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    } catch (e) {}
+    if (caps.zoom) {
+      const z = $('zoom');
+      z.min = caps.zoom.min; z.max = caps.zoom.max; z.step = caps.zoom.step || 0.1;
+      const cur = (track.getSettings().zoom) || caps.zoom.min;
+      z.value = cur; $('zoomV').textContent = Number(cur).toFixed(1) + '×';
+      $('zoomRow').hidden = false;
+      z.oninput = async () => {
+        $('zoomV').textContent = Number(z.value).toFixed(1) + '×';
+        try { await track.applyConstraints({ advanced: [{ zoom: Number(z.value) }] }); } catch (e) {}
+      };
+    }
+  }
+  function stopCamera() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = null; track = null; video.srcObject = null;
+    $('camhint').hidden = false;
+  }
+
+  // ---------- OCR ----------
+  let worker = null, workerLang = null;
+  async function initOCR() {
+    if (worker && workerLang === S.ocrLang) return;
+    if (worker) { try { await worker.terminate(); } catch (e) {} worker = null; }
+    setStatus('Načítavam rozpoznávanie textu… (prvýkrát to môže trvať pár sekúnd)');
+    worker = await Tesseract.createWorker(S.ocrLang, 1);
+    await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+    workerLang = S.ocrLang;
+  }
+
+  function grabFrame() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return false;
+    const sx = vw * S.left / 100, sy = vh * S.top / 100;
+    const sw = Math.max(8, Math.min(vw - sx, vw * S.width / 100));
+    const sh = Math.max(8, Math.min(vh - sy, vh * S.height / 100));
+    const scale = Math.max(1, Math.min(2.5, 1400 / sw));
+    work.width = Math.round(sw * scale); work.height = Math.round(sh * scale);
+    wctx.imageSmoothingEnabled = true;
+    wctx.drawImage(video, sx, sy, sw, sh, 0, 0, work.width, work.height);
+    if (S.mode !== 'none') {
+      const img = wctx.getImageData(0, 0, work.width, work.height), d = img.data, t = S.thr;
+      const light = S.mode === 'light';
+      for (let i = 0; i < d.length; i += 4) {
+        const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const isText = light ? l > t : l < t;
+        const v = isText ? 0 : 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      wctx.putImageData(img, 0, 0);
+    }
+    if ($('setDet').open) {
+      prev.width = work.width; prev.height = work.height;
+      pctx.drawImage(work, 0, 0);
+    }
+    return true;
+  }
+
+  function extractText(data) {
+    let t = '';
+    if (data.lines && data.lines.length) {
+      t = data.lines.map(line =>
+        (line.words || []).filter(w => w.confidence >= S.minConf).map(w => w.text).join(' ')
+      ).join(' ');
+    } else {
+      t = data.text || '';
+    }
+    return t.replace(/[|_~^`<>{}\[\]\\=*#@]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/\s+([,.!?;:])/g, '$1')
+            .trim();
+  }
+
+  function plausible(t) {
+    if (!t || t.length < 4) return false;
+    const chars = t.replace(/\s/g, '');
+    const letters = (t.match(/\p{L}/gu) || []).length;
+    if (letters / chars.length < 0.65) return false;
+    const words = t.split(' ').filter(w => (w.match(/\p{L}/gu) || []).length >= 2);
+    return words.length >= 2 || (words.length === 1 && words[0].length >= 4);
+  }
+
+  // podobnosť textov (Levenshtein)
+  function norm(s) { return s.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '').replace(/\s+/g, ' ').trim(); }
+  function sim(a, b) {
+    a = norm(a); b = norm(b);
+    if (!a.length && !b.length) return 1;
+    if (!a.length || !b.length) return 0;
+    if (a.length > 400) a = a.slice(0, 400);
+    if (b.length > 400) b = b.slice(0, 400);
+    let prevRow = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const row = [i];
+      for (let j = 1; j <= b.length; j++) {
+        row[j] = Math.min(prevRow[j] + 1, row[j - 1] + 1, prevRow[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      }
+      prevRow = row;
+    }
+    return 1 - prevRow[b.length] / Math.max(a.length, b.length);
+  }
+
+  // ---------- vyhodnotenie titulkov ----------
+  let candidate = null, candHits = 0, lastAccepted = null, lastSeenAt = 0, seq = 0;
+  function handleText(t) {
+    $('raw').textContent = t || '—';
+    const now = performance.now();
+    if (!plausible(t)) {
+      candidate = null; candHits = 0;
+      if (lastAccepted && now - lastSeenAt > 2500) lastAccepted = null; // titulok zmizol
+      return;
+    }
+    lastSeenAt = now;
+    if (candidate && sim(candidate, t) >= 0.75) {
+      candHits++;
+      if (t.length > candidate.length) candidate = t;
+    } else {
+      candidate = t; candHits = 1;
+    }
+    if (candHits >= S.stable && (!lastAccepted || sim(lastAccepted, candidate) < 0.7)) {
+      lastAccepted = candidate;
+      accept(candidate);
+    }
+  }
+
+  async function accept(orig) {
+    const id = ++seq;
+    const tr = await translate(orig);
+    addHistory(orig, tr);
+    if (id !== seq) return; // medzitým prišiel novší titulok
+    $('main').textContent = tr;
+    $('orig').textContent = orig;
+    speak(tr);
+  }
+
+  // ---------- preklad ----------
+  const cache = new Map();
+  const SRC = { eng: 'en', pol: 'pl', deu: 'de', fra: 'fr', spa: 'es', ita: 'it', rus: 'ru' };
+  async function fetchJson(url, ms = 6000) {
+    const ac = new AbortController();
+    const to = setTimeout(() => ac.abort(), ms);
+    try {
+      const r = await fetch(url, { signal: ac.signal });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } finally { clearTimeout(to); }
+  }
+  async function translate(text) {
+    const key = S.target + '|' + text;
+    if (cache.has(key)) return cache.get(key);
+    const src = SRC[S.ocrLang] || 'en';
+    let out = null;
+    try {
+      const j = await fetchJson('https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=' + src +
+        '&tl=' + S.target + '&q=' + encodeURIComponent(text));
+      out = (j[0] || []).map(x => x[0]).join('').trim();
+    } catch (e) {
+      try {
+        const j = await fetchJson('https://api.mymemory.translated.net/get?langpair=' + src + '|' + S.target +
+          '&q=' + encodeURIComponent(text));
+        out = (j.responseData && j.responseData.translatedText || '').trim();
+      } catch (e2) { out = null; }
+    }
+    if (!out) { setStatus('Preklad zlyhal – skontroluj internet.', 'err'); return text; }
+    cache.set(key, out);
+    if (cache.size > 300) cache.delete(cache.keys().next().value);
+    return out;
+  }
+
+  // ---------- reč ----------
+  const synth = window.speechSynthesis;
+  let voices = [], pendingText = null, currentUtt = null, lastSpoken = '';
+  function voiceScore(v) {
+    let s = 0;
+    if (/natural|neural|enhanced|premium|vylepšen|online|google|siri/i.test(v.name)) s += 3;
+    if (!v.localService) s += 1;
+    if (/laura|zuzana|viktoria|lukas|filip|iveta|zdenek|antonin|vlasta/i.test(v.name)) s += 1;
+    return s;
+  }
+  function fillVoices() {
+    if (!synth) { $('voiceNote').textContent = 'Tento prehliadač nevie čítať nahlas.'; return; }
+    voices = synth.getVoices();
+    const want = S.target;
+    let list = voices.filter(v => (v.lang || '').toLowerCase().startsWith(want));
+    const sel = $('voice');
+    sel.innerHTML = '';
+    if (!list.length) {
+      $('voiceNote').textContent = (want === 'sk' ? 'Slovenský' : 'Český') +
+        ' hlas nie je v telefóne nainštalovaný – pozri Tipy. Zatiaľ sa použije predvolený hlas.';
+      $('voiceNote').className = 'note warn';
+      list = voices;
+    } else {
+      $('voiceNote').textContent = 'Hlasy s „Natural / Enhanced / Online“ v názve znejú najprirodzenejšie.';
+      $('voiceNote').className = 'note';
+    }
+    list = [...list].sort((a, b) => voiceScore(b) - voiceScore(a));
+    list.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v.name; o.textContent = v.name + ' (' + v.lang + ')';
+      sel.appendChild(o);
+    });
+    if (S.voice && list.some(v => v.name === S.voice)) sel.value = S.voice;
+    else if (list[0]) { sel.value = list[0].name; }
+  }
+  if (synth) {
+    fillVoices();
+    synth.onvoiceschanged = fillVoices;
+    setTimeout(fillVoices, 800);
+  }
+  $('voice').addEventListener('change', () => { S.voice = $('voice').value; save(); });
+
+  function pickVoice() {
+    const name = $('voice').value;
+    return voices.find(v => v.name === name) || null;
+  }
+  function sayNow(text) {
+    const u = new SpeechSynthesisUtterance(text);
+    const v = pickVoice();
+    if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = S.target === 'sk' ? 'sk-SK' : 'cs-CZ'; }
+    u.rate = S.rate; u.pitch = 1; u.volume = 1;
+    u.onend = u.onerror = () => {
+      if (currentUtt !== u) return;
+      currentUtt = null;
+      if (pendingText) { const p = pendingText; pendingText = null; sayNow(p); }
+    };
+    currentUtt = u; // držíme referenciu (Chrome inak niekedy nezavolá onend)
+    lastSpoken = text;
+    synth.speak(u);
+  }
+  function speak(text) {
+    if (!S.speak || !synth || !text) return;
+    if (synth.speaking || synth.pending || currentUtt) {
+      if (S.interrupt) {
+        pendingText = null; currentUtt = null; synth.cancel();
+        setTimeout(() => sayNow(text), 60);
+      } else {
+        pendingText = text; // čaká len najnovší
+      }
+      return;
+    }
+    sayNow(text);
+  }
+  function unlockSpeech() {
+    if (!synth) return;
+    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth.speak(u); } catch (e) {}
+  }
+
+  const voiceBtn = $('voiceBtn');
+  function paintVoiceBtn() {
+    voiceBtn.textContent = S.speak ? '🔊 Hlas zap.' : '🔇 Hlas vyp.';
+    voiceBtn.classList.toggle('off', !S.speak);
+  }
+  paintVoiceBtn();
+  voiceBtn.onclick = () => {
+    S.speak = !S.speak; save(); paintVoiceBtn();
+    if (!S.speak && synth) { pendingText = null; currentUtt = null; synth.cancel(); }
+  };
+  $('repeatBtn').onclick = () => {
+    const t = $('main').textContent;
+    if (t && t !== '—' && synth) { pendingText = null; currentUtt = null; synth.cancel(); setTimeout(() => sayNow(t), 60); }
+  };
+  $('testBtn').onclick = () => {
+    if (!synth) return;
+    pendingText = null; currentUtt = null; synth.cancel();
+    setTimeout(() => sayNow(S.target === 'sk'
+      ? 'Ahoj, takto budem čítať titulky z hry.'
+      : 'Ahoj, takhle budu číst titulky ze hry.'), 60);
+  };
+
+  // ---------- história ----------
+  function addHistory(orig, tr) {
+    const li = document.createElement('li');
+    li.textContent = tr;
+    const sm = document.createElement('small'); sm.textContent = orig; li.appendChild(sm);
+    li.onclick = () => { if (synth) { pendingText = null; currentUtt = null; synth.cancel(); setTimeout(() => sayNow(tr), 60); } };
+    const h = $('hist'); h.prepend(li);
+    while (h.children.length > 40) h.lastChild.remove();
+  }
+
+  // ---------- obrazovka nezhasne ----------
+  let wakeLock = null;
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && running) keepAwake();
+  });
+
+  // ---------- hlavná slučka ----------
+  let running = false, timer = null, frames = 0, fpsT = performance.now();
+  async function loop() {
+    if (!running) return;
+    const t0 = performance.now();
+    try {
+      if (grabFrame()) {
+        const { data } = await worker.recognize(work);
+        if (!running) return;
+        handleText(extractText(data));
+        frames++;
+        const now = performance.now();
+        if (now - fpsT > 3000) {
+          setStatus('Beží • ' + (frames / ((now - fpsT) / 1000)).toFixed(1) + ' snímok/s • OCR ' +
+            Math.round(now - t0) + ' ms');
+          frames = 0; fpsT = now;
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus('Chyba: ' + e.message, 'err');
+    }
+    const dt = performance.now() - t0;
+    timer = setTimeout(loop, Math.max(30, S.interval - dt));
+  }
+
+  const startBtn = $('startBtn');
+  startBtn.onclick = async () => {
+    if (running) { stop(); return; }
+    if (!window.isSecureContext) {
+      setStatus('Kamera funguje len cez https:// – nahraj stránku na web s HTTPS.', 'err'); return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('Tento prehliadač nepodporuje kameru.', 'err'); return;
+    }
+    if (typeof Tesseract === 'undefined') {
+      setStatus('Nenačítala sa knižnica na čítanie textu – skontroluj internet a obnov stránku.', 'err'); return;
+    }
+    unlockSpeech();
+    startBtn.disabled = true;
+    try {
+      setStatus('Spúšťam kameru…');
+      await startCamera();
+      await initOCR();
+      running = true;
+      candidate = null; candHits = 0; lastAccepted = null;
+      keepAwake();
+      $('dot').classList.add('on');
+      startBtn.textContent = '■ Stop'; startBtn.className = 'stop';
+      setStatus('Beží – čakám na titulky…');
+      frames = 0; fpsT = performance.now();
+      loop();
+    } catch (e) {
+      console.error(e);
+      stopCamera();
+      setStatus(e.name === 'NotAllowedError'
+        ? 'Prístup ku kamere bol zamietnutý – povoľ ho v nastaveniach prehliadača.'
+        : 'Nepodarilo sa spustiť: ' + e.message, 'err');
+    } finally {
+      startBtn.disabled = false;
+    }
+  };
+  function stop() {
+    running = false;
+    clearTimeout(timer);
+    stopCamera();
+    try { if (wakeLock) wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+    $('dot').classList.remove('on');
+    startBtn.textContent = '▶ Štart'; startBtn.className = 'pri';
+    setStatus('Zastavené.');
+  }
+})();
+</script>
+</body>
+</html>
