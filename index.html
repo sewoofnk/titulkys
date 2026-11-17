@@ -46,6 +46,7 @@
   #hist{list-style:none;margin:0;padding:0 14px 14px;display:grid;gap:8px}
   #hist li{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:15px}
   #hist li small{display:block;color:var(--mut);font-size:12px;margin-top:2px}
+  textarea{width:100%;font:inherit;padding:10px;border-radius:8px;background:#0f1318;color:var(--txt);border:1px solid var(--line);resize:vertical}
   #blk{position:fixed;inset:0;background:#000;z-index:9999;display:none;touch-action:none;user-select:none;-webkit-user-select:none}
   #blk.on{display:block}
   #blkHint{position:absolute;top:45%;left:0;right:0;text-align:center;color:#2a2a2a;font-size:16px;opacity:0;transition:opacity .3s}
@@ -133,6 +134,19 @@
       </select>
     </div>
     <div class="row">
+      <label>Prekladač</label>
+      <select id="translator">
+        <option value="ai">AI (s kontextom)</option>
+        <option value="google">Google (rýchly)</option>
+      </select>
+      <div class="note">AI opravuje chyby OCR, preloží slang a vyradí nezmysly. Keď nie je dostupná, použije sa Google.</div>
+    </div>
+    <label class="chk"><input type="checkbox" id="vision"> Vision: čítať obraz priamo cez AI namiesto Tesseractu (len s AI prekladačom, šetrí sa detekciou zmeny)</label>
+    <div class="row">
+      <label>Glosár (riadky „originál = preklad“)</label>
+      <textarea id="glossary" rows="4" placeholder="Lamar = Lamar&#10;homie = kámo"></textarea>
+    </div>
+    <div class="row">
       <label>Preložiť do</label>
       <select id="target">
         <option value="sk">Slovenčina</option>
@@ -195,7 +209,8 @@
   // ---------- nastavenia ----------
   const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 700,
     ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
-    fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0', engine: 'neural', nvoice: '' };
+    fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0', engine: 'neural', nvoice: '',
+    translator: 'ai', vision: false, glossary: '' };
   let S = { ...DEF };
   try { Object.assign(S, JSON.parse(localStorage.getItem('titulky-set') || '{}')); } catch (e) {}
   const save = () => { try { localStorage.setItem('titulky-set', JSON.stringify(S)); } catch (e) {} };
@@ -217,7 +232,7 @@
       save();
     });
   });
-  ['mode', 'ocrLang', 'target', 'blackStyle', 'autoBlack', 'engine'].forEach(k => {
+  ['mode', 'ocrLang', 'target', 'blackStyle', 'autoBlack', 'engine', 'translator'].forEach(k => {
     $(k).value = S[k];
     $(k).addEventListener('change', async () => {
       S[k] = $(k).value; save();
@@ -226,6 +241,10 @@
       if (k === 'ocrLang' && running) { await initOCR(); }
     });
   });
+  $('vision').checked = S.vision;
+  $('vision').addEventListener('change', () => { S.vision = $('vision').checked; save(); });
+  $('glossary').value = S.glossary;
+  $('glossary').addEventListener('input', () => { S.glossary = $('glossary').value.slice(0, 2000); save(); cache.clear(); });
   $('skipSame').checked = S.skipSame;
   $('skipSame').addEventListener('change', () => { S.skipSame = $('skipSame').checked; save(); });
   $('interrupt').checked = S.interrupt;
@@ -356,6 +375,17 @@
     return { empty, same, thr: t };
   }
 
+  let lastBox = null;
+  const visionOn = () => S.vision && aiActive();
+  const vcan = document.createElement('canvas');
+  function captureVision() {
+    const [sx, sy, sw, sh] = lastBox;
+    const k = Math.min(1, 800 / sw);
+    vcan.width = Math.round(sw * k); vcan.height = Math.round(sh * k);
+    vcan.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, vcan.width, vcan.height);
+    return vcan.toDataURL('image/jpeg', 0.7).split(',')[1];
+  }
+
   // vráti: false (nie je obraz) | 'empty' (bez titulku) | 'same' (nezmenené) | true
   function grabFrame() {
     const vw = video.videoWidth, vh = video.videoHeight;
@@ -365,6 +395,7 @@
     const sh = Math.max(8, Math.min(vh - sy, vh * S.height / 100));
     const region = [S.left, S.top, S.width, S.height, S.mode].join();
     if (region !== lastRegion) { lastSig = null; lastRegion = region; }
+    lastBox = [sx, sy, sw, sh];
     const an = analyze(sx, sy, sw, sh);
     let thr = S.thr, mode = S.mode;
     if (mode === 'auto') {
@@ -374,7 +405,7 @@
       $('thrV').textContent = 'auto ' + thr;
       if (an.empty) return 'empty';
     }
-    if (S.skipSame && an.same) return 'same';
+    if ((S.skipSame || visionOn()) && an.same) return 'same';
     const scale = Math.max(1, Math.min(2.5, 1400 / sw));
     work.width = Math.round(sw * scale); work.height = Math.round(sh * scale);
     wctx.imageSmoothingEnabled = true;
@@ -465,14 +496,18 @@
 
   async function accept(orig) {
     const id = ++seq;
-    const tr = await translate(orig);
-    addHistory(orig, tr);
+    const res = await translate(orig);
+    if (res.skip) return;                 // AI: nezmysel z OCR
+    const tr = res.tr, shown = res.fixed || orig;
+    ctxHist.push(shown); if (ctxHist.length > 5) ctxHist.shift();
+    addHistory(shown, tr);
     if (id !== seq) return; // medzitým prišiel novší titulok
     $('main').textContent = tr;
-    $('orig').textContent = orig;
+    $('orig').textContent = shown;
     speak(tr);
     blackNotify(tr);
   }
+  const ctxHist = [];
 
   // ---------- preklad ----------
   const cache = new Map();
@@ -486,9 +521,58 @@
       return await r.json();
     } finally { clearTimeout(to); }
   }
+  const visionTr = new Map();   // text prečítaný cez vision -> hotový preklad
+  let aiOffUntil = 0;
+  async function aiTranslate(body, ms = 5000) {
+    const ac = new AbortController();
+    const to = setTimeout(() => ac.abort(), ms);
+    try {
+      const r = await fetch('/api/translate', {
+        method: 'POST', signal: ac.signal, headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } finally { clearTimeout(to); }
+  }
+  const aiBase = () => ({ target: S.target, source: SRC[S.ocrLang] || 'en', glossary: S.glossary, context: ctxHist.slice(-5) });
+  function aiActive() { return S.translator === 'ai' && performance.now() > aiOffUntil; }
+  function aiFailed(e) {
+    aiOffUntil = performance.now() + 30000;
+    setStatus('AI preklad nedostupný – používam Google.', 'warn');
+    console.warn(e);
+  }
+
+  // vráti { tr, fixed?, skip? }
   async function translate(text) {
-    const key = S.target + '|' + text;
+    const vt = visionTr.get(text);
+    if (vt) { visionTr.delete(text); return vt; }
+    const key = S.translator + '|' + S.target + '|' + text;
     if (cache.has(key)) return cache.get(key);
+    if (aiActive()) {
+      try {
+        const j = await aiTranslate({ ...aiBase(), text });
+        const res = { tr: (j.translation || '').trim(), fixed: (j.fixed || '').trim(), skip: !!j.skip };
+        if (!res.tr) res.skip = true;
+        cache.set(key, res);
+        return res;
+      } catch (e) { aiFailed(e); }
+    }
+    const tr = await googleTranslate(text);
+    const res = { tr };
+    if (tr !== text) { cache.set(key, res); if (cache.size > 300) cache.delete(cache.keys().next().value); }
+    return res;
+  }
+
+  // vision: obrázok -> { fixed, translation, skip } alebo null pri chybe
+  async function visionRead() {
+    try {
+      const j = await aiTranslate({ ...aiBase(), text: '', image: captureVision() }, 7000);
+      return { fixed: (j.fixed || '').trim(), tr: (j.translation || '').trim(), skip: !!j.skip || !(j.translation || '').trim() };
+    } catch (e) { aiFailed(e); return null; }
+  }
+
+  async function googleTranslate(text) {
     const src = SRC[S.ocrLang] || 'en';
     let out = null;
     try {
@@ -503,8 +587,6 @@
       } catch (e2) { out = null; }
     }
     if (!out) { setStatus('Preklad zlyhal – skontroluj internet.', 'err'); return text; }
-    cache.set(key, out);
-    if (cache.size > 300) cache.delete(cache.keys().next().value);
     return out;
   }
 
@@ -775,11 +857,25 @@
       if (g === 'empty') { lastText = ''; handleText(''); frames++; }
       else if (g === 'same') { handleText(lastText); frames++; }
       else if (g) {
-        const { data } = await worker.recognize(work);
-        if (!running) return;
-        lastText = extractText(data);
-        handleText(lastText);
-        frames++;
+        let done = false;
+        if (visionOn()) {
+          const v = await visionRead();
+          if (!running) return;
+          if (v) {
+            done = true;
+            lastText = v.skip ? '' : v.fixed;
+            if (!v.skip && lastText) visionTr.set(lastText, { tr: v.tr, fixed: v.fixed });
+            handleText(lastText);
+            frames++;
+          }
+        }
+        if (!done) {
+          const { data } = await worker.recognize(work);
+          if (!running) return;
+          lastText = extractText(data);
+          handleText(lastText);
+          frames++;
+        }
         const now = performance.now();
         if (now - fpsT > 3000) {
           setStatus('Beží • ' + (frames / ((now - fpsT) / 1000)).toFixed(1) + ' snímok/s • OCR ' +
