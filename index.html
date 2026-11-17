@@ -996,44 +996,50 @@
   // ---------- reč ----------
   const synth = window.speechSynthesis;
   let voices = [], pendingText = null, currentUtt = null, lastSpoken = '';
+  // Siri hlasy sa v zozname ukazujú (iPad/iPhone/Mac), ale cez prehliadač nevydajú zvuk – vynechaj ich
+  const usable = v => !/siri/i.test(v.name || '');
   function voiceScore(v) {
     let s = 0;
-    if (/natural|neural|enhanced|premium|vylepšen|online|google|siri/i.test(v.name)) s += 3;
-    if (!v.localService) s += 1;
-    if (/laura|zuzana|viktoria|lukas|filip|iveta|zdenek|antonin|vlasta/i.test(v.name)) s += 1;
+    if (/natural|neural|enhanced|premium|vylepšen|online|google/i.test(v.name)) s += 3;
+    if (/laura|zuzana|viktoria|lukas|filip|iveta|zdenek|antonin|vlasta/i.test(v.name)) s += 2;
+    if (v.default) s += 1;
     return s;
   }
   function fillVoices() {
     if (!synth) { $('voiceNote').textContent = 'Tento prehliadač nevie čítať nahlas.'; return; }
-    voices = synth.getVoices();
+    voices = synth.getVoices().filter(usable);
     const want = S.target;
-    let list = voices.filter(v => (v.lang || '').toLowerCase().startsWith(want));
+    const mine = voices.filter(v => (v.lang || '').toLowerCase().replace('_', '-').startsWith(want));
     const sel = $('voice');
     sel.innerHTML = '';
-    if (!list.length) {
+    const def = document.createElement('option');
+    def.value = ''; def.textContent = 'Predvolený hlas zariadenia (' + (want === 'sk' ? 'sk-SK' : 'cs-CZ') + ')';
+    sel.appendChild(def);
+    if (!mine.length) {
       $('voiceNote').textContent = (want === 'sk' ? 'Slovenský' : 'Český') +
-        ' hlas nie je v telefóne nainštalovaný – pozri Tipy. Zatiaľ sa použije predvolený hlas.';
+        ' hlas sa v zariadení nenašiel (hlasov spolu: ' + voices.length + '). Na iPade: Nastavenia → Prístupnosť → Hovorený obsah → Hlasy → ' +
+        (want === 'sk' ? 'Slovenčina → Laura' : 'Čeština → Zuzana') + ' a stiahni hlas. Potom obnov stránku.';
       $('voiceNote').className = 'note warn';
-      list = voices;
     } else {
-      $('voiceNote').textContent = 'Hlasy s „Natural / Enhanced / Online“ v názve znejú najprirodzenejšie.';
+      $('voiceNote').textContent = 'Nájdené hlasy: ' + mine.length + '. Ak niektorý nehrá, skús iný alebo „Predvolený hlas zariadenia“.';
       $('voiceNote').className = 'note';
     }
-    list = [...list].sort((a, b) => voiceScore(b) - voiceScore(a));
+    const list = mine.length ? [...mine].sort((a, b) => voiceScore(b) - voiceScore(a)) : [];
     list.forEach(v => {
       const o = document.createElement('option');
       o.value = v.name; o.textContent = v.name + ' (' + v.lang + ')';
       sel.appendChild(o);
     });
-    if (S.voice && list.some(v => v.name === S.voice)) sel.value = S.voice;
-    else if (list[0]) { sel.value = list[0].name; }
+    if (S.voice === '__def') sel.value = '';
+    else if (S.voice && [...sel.options].some(o => o.value === S.voice)) sel.value = S.voice;
+    else sel.value = list[0] ? list[0].name : '';
   }
   if (synth) {
     fillVoices();
     synth.onvoiceschanged = fillVoices;
     setTimeout(fillVoices, 800);
   }
-  $('voice').addEventListener('change', () => { S.voice = $('voice').value; save(); });
+  $('voice').addEventListener('change', () => { S.voice = $('voice').value || '__def'; save(); });
 
   function pickVoice() {
     const name = $('voice').value;
