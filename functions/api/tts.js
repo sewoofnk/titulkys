@@ -88,3 +88,8 @@ export async function onRequestPost({ request, env }) {
   await cache.put(cacheKey, res.clone());
   return res;
 }
+
+// GET: či je služba nastavená (frontend sa podľa toho rozhodne hneď pri načítaní)
+export async function onRequestGet({ env }) {
+  return new Response(JSON.stringify({ configured: !!(env.AZURE_KEY && env.AZURE_REGION) }), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+}

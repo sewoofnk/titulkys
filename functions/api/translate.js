@@ -144,3 +144,8 @@ export async function onRequestPost({ request, env }) {
     return json({ error: String(e.message || e) }, 502);
   } finally { clearTimeout(to); }
 }
+
+// GET: či je služba nastavená (frontend sa podľa toho rozhodne hneď pri načítaní)
+export async function onRequestGet({ env }) {
+  return new Response(JSON.stringify({ configured: !!env.AI_KEY }), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+}

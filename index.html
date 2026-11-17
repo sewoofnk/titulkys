@@ -1037,6 +1037,7 @@
     };
     currentUtt = u; // držíme referenciu (Chrome inak niekedy nezavolá onend)
     lastSpoken = text;
+    try { if (synth.paused) synth.resume(); } catch (e) {}
     synth.speak(u);
   }
   // ---------- neurónový hlas (Azure cez /api/tts) ----------
@@ -1064,7 +1065,9 @@
   $('nvoice').addEventListener('change', () => { S.nvoice = $('nvoice').value; save(); });
   function paintEngine() {
     $('nvoiceRow').hidden = S.engine !== 'neural';
-    $('nNote').textContent = 'Spotrebované znaky tento mesiac: ' + monthChars().toLocaleString('sk-SK') +
+    $('nNote').textContent = (neuralReady === false
+      ? '⚠️ Cloud hlas nie je na serveri nastavený (chýba AZURE_KEY / AZURE_REGION v Cloudflare) – používa sa systémový hlas. '
+      : '') + 'Spotrebované znaky tento mesiac: ' + monthChars().toLocaleString('sk-SK') +
       '. Ak cloud hlas zlyhá alebo trvá dlhšie ako 3 s, použije sa systémový.';
   }
   function stopNeural() {
@@ -1105,6 +1108,7 @@
     } catch (e) {
       if (tok === nTok) {
         neuralOffUntil = performance.now() + 30000; // 30 s nezdržuj ďalšími pokusmi
+        if (/HTTP (503|404|405|403)/.test(String(e && e.message))) { neuralReady = false; paintEngine(); }
         setStatus('Neurónový hlas nedostupný (' + (e && e.message || e) + ') – používam systémový.', 'warn');
         sayNow(text, ch);
       }
@@ -1115,7 +1119,15 @@
       }
     }
   }
-  function useNeural() { return S.engine === 'neural' && performance.now() > neuralOffUntil; }
+  let neuralReady = null;   // null = ešte nevieme, true/false podľa servera
+  function useNeural() { return S.engine === 'neural' && neuralReady !== false && performance.now() > neuralOffUntil; }
+  async function probeServices() {
+    const get = async u => { try { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) return false; const j = await r.json(); return !!j.configured; } catch (e) { return false; } };
+    const [tts, ai] = await Promise.all([get('/api/tts'), get('/api/translate')]);
+    neuralReady = tts;
+    if (!ai) aiOffUntil = Infinity;
+    paintEngine();
+  }
   function replay(text, ch) {
     stopAll();
     setTimeout(() => speak(text, true, ch), 60);
@@ -1171,12 +1183,18 @@
   $('testBtn').onclick = () => {
     unlockSpeech();
     neuralOffUntil = 0;
-    setStatus('Skúšam hlas… (' + (S.engine === 'neural' ? 'neurónový, pri zlyhaní systémový' : 'systémový') + ')');
-    replay(S.target === 'sk'
-      ? 'Ahoj, takto budem čítať titulky z hry.'
-      : 'Ahoj, takhle budu číst titulky ze hry.');
+    setStatus('Skúšam hlas… (' + (useNeural() ? 'neurónový, pri zlyhaní systémový' : 'systémový hlas telefónu') + ')');
+    const t = S.target === 'sk' ? 'Ahoj, takto budem čítať titulky z hry.' : 'Ahoj, takhle budu číst titulky ze hry.';
+    if (!useNeural()) {
+      stopAll();
+      if (!synth) { setStatus('Tento prehliadač nevie čítať nahlas.', 'err'); return; }
+      sayNow(t);            // priamo v ťuknutí – mobil to inak môže zablokovať
+      return;
+    }
+    replay(t);
   };
   fillNVoices(); paintEngine(); fillCharUI();
+  probeServices();
 
   // ---------- história ----------
   function addHistory(orig, tr, ch) {
