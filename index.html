@@ -613,7 +613,11 @@
       console.warn('Lokálny Tesseract zlyhal, používam CDN', e);
       worker = await Tesseract.createWorker(S.ocrLang, 1);
     }
-    await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+    const params = { tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' };
+    // angličtina: povoľ iba písmená, číslice a bežnú interpunkciu (menej „§“ a podobných smetí)
+    if (S.ocrLang === 'eng') params.tessedit_char_whitelist =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?'\"-:;()";
+    await worker.setParameters(params);
     workerLang = S.ocrLang;
   }
 
@@ -716,18 +720,35 @@
   }
 
   function extractText(data) {
-    let t = '';
+    let lines;
     if (data.lines && data.lines.length) {
-      t = data.lines.map(line =>
-        (line.words || []).filter(w => w.confidence >= S.minConf).map(w => w.text).join(' ')
-      ).join(' ');
+      lines = data.lines.map(line =>
+        // neisté slovo zahoď len ak je krátke alebo nevyzerá ako slovo – inak by z vety ostal útržok
+        (line.words || []).filter(w => w.confidence >= S.minConf ||
+          (letters(w.text) >= 3 && /[aeiouyáéíóúý]/i.test(w.text) && w.confidence >= S.minConf / 2)).map(w => w.text).join(' '));
     } else {
-      t = data.text || '';
+      lines = String(data.text || '').split('\n');
     }
-    return t.replace(/[|_~^`<>{}\[\]\\=*#@]/g, ' ')
-            .replace(/\s+/g, ' ')
-            .replace(/\s+([,.!?;:])/g, '$1')
-            .trim();
+    // riadok bez aspoň 3 písmen je šum z pozadia (napr. „A, §“)
+    lines = lines.map(cleanText).filter(l => letters(l) >= 3);
+    return cleanText(lines.join(' '));
+  }
+  const letters = x => (x.match(/\p{L}/gu) || []).length;
+  function cleanText(t) {
+    // ponechaj iba písmená, číslice a bežnú interpunkciu
+    t = t.replace(/[^\p{L}\p{N}\s.,!?'’"“”\-–:;…()]/gu, ' ')
+         .replace(/\s+/g, ' ')
+         .replace(/\s+([,.!?;:…])/g, '$1')
+         .trim();
+    let w = t.split(' ').filter(x => letters(x) > 0 || /\p{N}/u.test(x));   // kúsky bez písmen a číslic preč
+    // na začiatku: osamotené 1-písmenové kúsky okrem „I“
+    while (w.length > 1 && letters(w[0]) === 1 && !/^I[.,!?]?$/.test(w[0])) w.shift();
+    // na konci: všetko za koncom vety, čo má iba 1 písmeno (napr. „… happened. A,“)
+    const lastEnd = (() => { for (let i = w.length - 2; i >= 0; i--) if (/[.!?…]["”’)]?$/.test(w[i])) return i; return -1; })();
+    if (lastEnd >= 0 && letters(w.slice(lastEnd + 1).join('')) < 2) w = w.slice(0, lastEnd + 1);
+    // osamotené 1-písmenové kúsky na konci (okrem „I“, „a“)
+    while (w.length > 1 && letters(w[w.length - 1]) === 1 && !/^(I|a)[.,!?]?$/.test(w[w.length - 1])) w.pop();
+    return w.join(' ').replace(/^[,.;:!?…\-–\s]+/, '').trim();
   }
 
   function plausible(t) {
