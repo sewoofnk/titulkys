@@ -46,6 +46,13 @@
   #hist{list-style:none;margin:0;padding:0 14px 14px;display:grid;gap:8px}
   #hist li{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:15px}
   #hist li small{display:block;color:var(--mut);font-size:12px;margin-top:2px}
+  #blk{position:fixed;inset:0;background:#000;z-index:9999;display:none;touch-action:none;user-select:none;-webkit-user-select:none}
+  #blk.on{display:block}
+  #blkHint{position:absolute;top:45%;left:0;right:0;text-align:center;color:#2a2a2a;font-size:16px;opacity:0;transition:opacity .3s}
+  #blkHint.show{opacity:1}
+  #blkDot{position:absolute;top:calc(env(safe-area-inset-top) + 14px);right:14px;width:10px;height:10px;border-radius:50%;background:#000;transition:background .15s}
+  #blkDot.flash{background:#3a3a3a}
+  #blkTxt{position:absolute;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 18px);text-align:center;color:#333;font-size:18px;line-height:1.3}
 </style>
 </head>
 <body>
@@ -69,6 +76,7 @@
   <button class="pri" id="startBtn">▶ Štart</button>
   <button id="voiceBtn">🔊 Hlas zap.</button>
   <button id="repeatBtn">↻ Zopakuj</button>
+  <button id="blackBtn" disabled>🌑 Čierna obrazovka</button>
 </div>
 <div id="status">Pripravené.</div>
 
@@ -83,9 +91,27 @@
     <div class="row">
       <label>Úprava obrazu</label>
       <select id="mode">
+        <option value="auto">Automaticky (Otsuov prah) – predvolené</option>
         <option value="light">Svetlé titulky (biele/žlté) – odporúčané</option>
         <option value="dark">Tmavé titulky na svetlom pozadí</option>
         <option value="none">Bez úpravy</option>
+      </select>
+    </div>
+    <label class="chk"><input type="checkbox" id="skipSame"> Preskočiť OCR, keď sa obraz nezmenil (šetrí baterku)</label>
+    <div class="row">
+      <label>Čierna obrazovka – vzhľad</label>
+      <select id="blackStyle">
+        <option value="black">Úplne čierna</option>
+        <option value="dot">Tlmená bodka pri novom titulku</option>
+        <option value="dim">Tlmené titulky dole</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Čierna obrazovka automaticky po štarte</label>
+      <select id="autoBlack">
+        <option value="0">Vypnuté</option>
+        <option value="10">Po 10 s</option>
+        <option value="30">Po 30 s</option>
       </select>
     </div>
     <div class="row"><label>Prah jasu <b id="thrV"></b></label><input type="range" id="thr" min="60" max="250" step="1"></div>
@@ -144,6 +170,7 @@
   </div>
 </details>
 
+<div id="blk"><div id="blkDot"></div><div id="blkHint">Dvakrát ťukni pre návrat</div><div id="blkTxt"></div></div>
 <canvas id="work" hidden></canvas>
 
 <script>
@@ -154,9 +181,9 @@
   const prev = $('prev'), pctx = prev.getContext('2d');
 
   // ---------- nastavenia ----------
-  const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'light', interval: 700,
+  const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 700,
     ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
-    fs: 26, stable: 2, minConf: 50 };
+    fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0' };
   let S = { ...DEF };
   try { Object.assign(S, JSON.parse(localStorage.getItem('titulky-set') || '{}')); } catch (e) {}
   const save = () => { try { localStorage.setItem('titulky-set', JSON.stringify(S)); } catch (e) {} };
@@ -178,7 +205,7 @@
       save();
     });
   });
-  ['mode', 'ocrLang', 'target'].forEach(k => {
+  ['mode', 'ocrLang', 'target', 'blackStyle', 'autoBlack'].forEach(k => {
     $(k).value = S[k];
     $(k).addEventListener('change', async () => {
       S[k] = $(k).value; save();
@@ -186,6 +213,8 @@
       if (k === 'ocrLang' && running) { await initOCR(); }
     });
   });
+  $('skipSame').checked = S.skipSame;
+  $('skipSame').addEventListener('change', () => { S.skipSame = $('skipSame').checked; save(); });
   $('interrupt').checked = S.interrupt;
   $('interrupt').addEventListener('change', () => { S.interrupt = $('interrupt').checked; save(); });
 
@@ -275,19 +304,71 @@
     workerLang = S.ocrLang;
   }
 
+  // rýchla analýza oblasti: automatický prah (Otsu) + detekcia zmeny + prázdna oblasť
+  const small = document.createElement('canvas');
+  const sctx = small.getContext('2d', { willReadFrequently: true });
+  let lastSig = null, autoThr = 175, lastRegion = null;
+  function otsu(hist, total) {
+    let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+    let sumB = 0, wB = 0, best = 0, thr = 128;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t]; if (!wB) continue;
+      const wF = total - wB; if (!wF) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB, mF = (sum - sumB) / wF;
+      const v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > best) { best = v; thr = t; }
+    }
+    return thr;
+  }
+  function analyze(sx, sy, sw, sh) {
+    const w = 256, h = Math.max(8, Math.min(128, Math.round(w * sh / sw)));
+    if (small.width !== w || small.height !== h) { small.width = w; small.height = h; lastSig = null; }
+    sctx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
+    const d = sctx.getImageData(0, 0, w, h).data, n = w * h;
+    const lum = new Uint8Array(n), hist = new Uint32Array(256);
+    for (let i = 0, j = 0; j < n; i += 4, j++) {
+      const l = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0; lum[j] = l; hist[l]++;
+    }
+    let same = false;
+    if (lastSig && lastSig.length === n) {
+      let diff = 0; for (let j = 0; j < n; j++) diff += Math.abs(lum[j] - lastSig[j]);
+      same = diff / n < 2.5;
+    }
+    lastSig = lum;
+    const pct = p => { let c = 0; const lim = n * p; for (let i = 0; i < 256; i++) { c += hist[i]; if (c >= lim) return i; } return 255; };
+    const t = Math.max(100, Math.min(245, otsu(hist, n)));
+    let light = 0; for (let i = t + 1; i < 256; i++) light += hist[i];
+    const empty = (pct(0.995) - pct(0.5) < 50) || light / n < 0.002;
+    return { empty, same, thr: t };
+  }
+
+  // vráti: false (nie je obraz) | 'empty' (bez titulku) | 'same' (nezmenené) | true
   function grabFrame() {
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return false;
     const sx = vw * S.left / 100, sy = vh * S.top / 100;
     const sw = Math.max(8, Math.min(vw - sx, vw * S.width / 100));
     const sh = Math.max(8, Math.min(vh - sy, vh * S.height / 100));
+    const region = [S.left, S.top, S.width, S.height, S.mode].join();
+    if (region !== lastRegion) { lastSig = null; lastRegion = region; }
+    const an = analyze(sx, sy, sw, sh);
+    let thr = S.thr, mode = S.mode;
+    if (mode === 'auto') {
+      mode = 'light';
+      if (!an.empty) autoThr = an.thr;
+      thr = autoThr;
+      $('thrV').textContent = 'auto ' + thr;
+      if (an.empty) return 'empty';
+    }
+    if (S.skipSame && an.same) return 'same';
     const scale = Math.max(1, Math.min(2.5, 1400 / sw));
     work.width = Math.round(sw * scale); work.height = Math.round(sh * scale);
     wctx.imageSmoothingEnabled = true;
     wctx.drawImage(video, sx, sy, sw, sh, 0, 0, work.width, work.height);
-    if (S.mode !== 'none') {
-      const img = wctx.getImageData(0, 0, work.width, work.height), d = img.data, t = S.thr;
-      const light = S.mode === 'light';
+    if (mode !== 'none') {
+      const img = wctx.getImageData(0, 0, work.width, work.height), d = img.data, t = thr;
+      const light = mode === 'light';
       for (let i = 0; i < d.length; i += 4) {
         const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
         const isText = light ? l > t : l < t;
@@ -377,6 +458,7 @@
     $('main').textContent = tr;
     $('orig').textContent = orig;
     speak(tr);
+    blackNotify(tr);
   }
 
   // ---------- preklad ----------
@@ -532,16 +614,58 @@
     if (document.visibilityState === 'visible' && running) keepAwake();
   });
 
+  // ---------- čierna obrazovka ----------
+  // Pozn.: skutočné zhasnutie displeja by pozastavilo kameru aj JS, preto je to čierna vrstva + Wake Lock.
+  const blk = $('blk'), blkHint = $('blkHint');
+  let blackOn = false, autoBlackT = null, lastTap = 0, pressT = null, hintT = null;
+  function showHint() {
+    blkHint.classList.add('show'); clearTimeout(hintT);
+    hintT = setTimeout(() => blkHint.classList.remove('show'), 2000);
+  }
+  async function enterBlack() {
+    if (blackOn || !running) return;
+    blackOn = true; blk.classList.add('on'); $('blkTxt').textContent = '';
+    try { if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen(); } catch (e) {}
+    keepAwake();
+  }
+  function exitBlack() {
+    if (!blackOn) return;
+    blackOn = false; blk.classList.remove('on'); clearTimeout(pressT);
+    try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
+  }
+  function blackNotify(tr) {
+    if (!blackOn) return;
+    if (S.blackStyle === 'dot') {
+      const d = $('blkDot'); d.classList.add('flash'); setTimeout(() => d.classList.remove('flash'), 400);
+    } else if (S.blackStyle === 'dim') {
+      $('blkTxt').textContent = tr;
+    }
+  }
+  blk.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const now = performance.now();
+    if (now - lastTap < 400) { lastTap = 0; exitBlack(); return; }
+    lastTap = now; showHint();
+    clearTimeout(pressT); pressT = setTimeout(exitBlack, 1000);
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => blk.addEventListener(ev, () => clearTimeout(pressT)));
+  blk.addEventListener('contextmenu', e => e.preventDefault());
+  $('blackBtn').onclick = enterBlack;
+
   // ---------- hlavná slučka ----------
-  let running = false, timer = null, frames = 0, fpsT = performance.now();
+  let lastText = '', running = false, timer = null, frames = 0, fpsT = performance.now();
   async function loop() {
     if (!running) return;
     const t0 = performance.now();
     try {
-      if (grabFrame()) {
+      const g = grabFrame();
+      if (g === 'empty') { lastText = ''; handleText(''); frames++; }
+      else if (g === 'same') { handleText(lastText); frames++; }
+      else if (g) {
         const { data } = await worker.recognize(work);
         if (!running) return;
-        handleText(extractText(data));
+        lastText = extractText(data);
+        handleText(lastText);
         frames++;
         const now = performance.now();
         if (now - fpsT > 3000) {
@@ -577,8 +701,11 @@
       await startCamera();
       await initOCR();
       running = true;
-      candidate = null; candHits = 0; lastAccepted = null;
+      candidate = null; candHits = 0; lastAccepted = null; lastText = ''; lastSig = null;
       keepAwake();
+      $('blackBtn').disabled = false;
+      clearTimeout(autoBlackT);
+      if (Number(S.autoBlack) > 0) autoBlackT = setTimeout(() => { if (running) enterBlack(); }, Number(S.autoBlack) * 1000);
       $('dot').classList.add('on');
       startBtn.textContent = '■ Stop'; startBtn.className = 'stop';
       setStatus('Beží – čakám na titulky…');
@@ -596,6 +723,7 @@
   };
   function stop() {
     running = false;
+    clearTimeout(autoBlackT); exitBlack(); $('blackBtn').disabled = true;
     clearTimeout(timer);
     stopCamera();
     try { if (wakeLock) wakeLock.release(); } catch (e) {}
