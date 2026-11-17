@@ -603,6 +603,8 @@
     const ar = (video.videoWidth || 16) / (video.videoHeight || 9);
     cam.style.setProperty('--ar', ar);
     track = stream.getVideoTracks()[0];
+    track.onended = () => { if (running) restartCamera('Kamera sa vypla'); };
+    track.onunmute = () => { try { video.play(); } catch (e) {} };
     const caps = track.getCapabilities ? track.getCapabilities() : {};
     try {
       if (caps.focusMode && caps.focusMode.includes('continuous'))
@@ -620,6 +622,34 @@
       };
     }
   }
+  // ---------- strážca kamery: ak obraz zamrzne, kameru obnov ----------
+  let camBusy = false, wdT = 0, wdStale = 0;
+  async function restartCamera(why) {
+    if (camBusy || !running) return;
+    camBusy = true;
+    try {
+      setStatus(why + ' – obnovujem kameru…', 'warn');
+      if (stream) stream.getTracks().forEach(t => { t.onended = null; try { t.stop(); } catch (e) {} });
+      stream = null; track = null; video.srcObject = null;
+      await new Promise(r => setTimeout(r, 400));
+      await startCamera();
+      wdStale = 0; wdT = video.currentTime;
+      setStatus('Kamera obnovená.');
+    } catch (e) {
+      setStatus('Kameru sa nepodarilo obnoviť: ' + (e && e.message || e), 'err');
+    } finally { camBusy = false; }
+  }
+  setInterval(() => {
+    if (!running || camBusy || !stream) return;
+    const t = video.currentTime;
+    const dead = video.paused || video.ended || t === wdT || !track || track.readyState === 'ended';
+    wdT = t;
+    if (!dead) { wdStale = 0; return; }
+    wdStale++;
+    if (wdStale === 1) { try { video.play(); } catch (e) {} }          // najprv skús iba spustiť prehrávanie
+    else if (wdStale >= 2) { wdStale = 0; restartCamera('Obraz z kamery zamrzol'); }
+  }, 2000);
+
   function stopCamera() {
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null; track = null; video.srcObject = null;
@@ -1164,7 +1194,7 @@
     try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && running) keepAwake();
+    if (document.visibilityState === 'visible' && running) { keepAwake(); try { video.play(); } catch (e) {} }
   });
 
   // ---------- čierna obrazovka ----------
