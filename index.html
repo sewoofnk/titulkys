@@ -620,6 +620,16 @@
 
   // ---------- OCR ----------
   let worker = null, workerLang = null;
+  function withTimeout(p, ms, msg) {
+    let to;
+    const t = new Promise((_, rej) => { to = setTimeout(() => rej(new Error(msg)), ms); });
+    return Promise.race([p, t]).finally(() => clearTimeout(to));
+  }
+  async function resetOCR() {
+    try { if (worker) worker.terminate(); } catch (e) {}
+    worker = null; workerLang = null; window.TESS_LOCAL = false;   // ďalší pokus rovno z CDN
+    await initOCR();
+  }
   async function initOCR() {
     if (worker && workerLang === S.ocrLang) return;
     if (worker) { try { await worker.terminate(); } catch (e) {} worker = null; }
@@ -629,8 +639,9 @@
     if (S.ocrLang === 'eng') local.langPath = base;   // lokálne je iba angličtina, ostatné jazyky z CDN
     try {
       if (!window.TESS_LOCAL) throw new Error('bez lokálnej kópie');
-      worker = await Tesseract.createWorker(S.ocrLang, 1, local);
+      worker = await withTimeout(Tesseract.createWorker(S.ocrLang, 1, local), 25000, 'OCR init timeout');
     } catch (e) {
+      window.TESS_LOCAL = false;
       console.warn('Lokálny Tesseract zlyhal, používam CDN', e);
       worker = await Tesseract.createWorker(S.ocrLang, 1);
     }
@@ -1236,7 +1247,7 @@
           }
         }
         if (!done) {
-          const { data } = await worker.recognize(work);
+          const { data } = await withTimeout(worker.recognize(work), 15000, 'OCR timeout');
           if (!running) return;
           lastText = extractText(data);
           handleText(lastText);
@@ -1251,7 +1262,10 @@
       }
     } catch (e) {
       console.error(e);
-      setStatus('Chyba: ' + e.message, 'err');
+      setStatus('Chyba: ' + (e && e.message || e), 'err');
+      if (running && /OCR/.test(String(e && e.message))) {
+        try { setStatus('Rozpoznávanie sa zaseklo – reštartujem ho…', 'warn'); await resetOCR(); } catch (e2) { setStatus('Rozpoznávanie sa nepodarilo obnoviť: ' + e2.message, 'err'); }
+      }
     }
     const dt = performance.now() - t0;
     timer = setTimeout(loop, Math.max(30, S.interval - dt));
