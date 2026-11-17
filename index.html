@@ -690,8 +690,10 @@
       $('thrV').textContent = 'auto ' + thr;
       if (an.empty) return 'empty';
     }
-    if ((S.skipSame || visionOn()) && an.same) return 'same';
-    const scale = Math.max(1, Math.min(2, 1000 / sw));
+    // nepotvrdený titulok sa musí prečítať znova (nezávislé čítanie), aj keď sa obraz nezmenil
+    const confirming = candidate && candHits > 0 && candHits < S.stable;
+    if ((S.skipSame || visionOn()) && an.same && !confirming) return 'same';
+    const scale = Math.max(1, Math.min(2.5, 1400 / sw));
     work.width = Math.round(sw * scale); work.height = Math.round(sh * scale);
     wctx.imageSmoothingEnabled = true;
     wctx.drawImage(img, sx, sy, sw, sh, 0, 0, work.width, work.height);
@@ -807,10 +809,11 @@
   // je to naozaj nový titulok (alebo pribudli slová)?
   function isNew(prev, cur, d) {
     if (!prev) return true;
-    if (d !== cur) return splitW(d).filter(w => normW(w).length > 1).length >= 1 && plausibleWords(d);
+    // pribudli slová: aspoň 2 skutočné slová (inak je to skôr šum z OCR)
+    if (d !== cur) return splitW(d).filter(w => normW(w).length > 1).length >= 2 && plausibleWords(d);
     return sim(prev, cur) < 0.7;
   }
-  const plausibleWords = d => (d.match(/\p{L}/gu) || []).length >= 3;
+  const plausibleWords = d => (d.match(/\p{L}/gu) || []).length >= 6;
   function prefetch(text) {
     translate(text).then(r => { if (r && !r.skip && r.tr && cloudKind() === 'google') gttsBlob(r.tr).catch(() => {}); }).catch(() => {});
   }
