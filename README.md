@@ -13,4 +13,4 @@ V *Settings → Environment variables* (ako Secrets) nastav:
 | `AI_MODEL` | voliteľne názov modelu (over aktuálny názov v dokumentácii poskytovateľa) |
 
 Bez týchto premenných stránka funguje ďalej so systémovým hlasom a prekladom cez Google.
-Pri zmene súborov aplikácie zvýš `VERSION` v `sw.js`.
+Číslo verzie je vo `version.js` a zvyšuje sa automaticky pri každom commite (git hook v `.githooks`). Po naklonovaní spusti raz `git config core.hooksPath .githooks`.

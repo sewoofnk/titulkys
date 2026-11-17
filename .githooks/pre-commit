@@ -1,0 +1,4 @@
+#!/bin/sh
+# Pri každom commite zvýš číslo verzie (ak version.js už nie je medzi zmenami v tomto commite).
+if git diff --cached --name-only | grep -qx 'version.js'; then exit 0; fi
+node bump-version.js && git add version.js

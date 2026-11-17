@@ -11,6 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Titulky">
+<script src="version.js"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
 <script>
   // záloha: ak lokálna kópia chýba, načíta sa z CDN
@@ -271,7 +272,7 @@
 <footer id="foot">
   <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect width="24" height="24" rx="5" fill="#0b0d10"/><path d="M5 5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-8l-4 3.5V16H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" transform="translate(0 .5) scale(.92) translate(1 .6)" fill="#3ddc97"/><rect x="7" y="8" width="10" height="1.8" rx=".9" fill="#04130c"/><rect x="7" y="11.4" width="6.5" height="1.8" rx=".9" fill="#04130c"/></svg>
   <span>© 2026 Olejník Matúš</span>
-  <span class="ver">verzia 1.0.0</span>
+  <span class="ver" id="ver">verzia –</span>
 </footer>
 <div id="blk"><div id="blkDot"></div><div id="blkHint">Dvakrát ťukni pre návrat</div><div id="blkTxt"></div></div>
 <canvas id="work" hidden></canvas>
@@ -1204,6 +1205,7 @@
   blk.addEventListener('contextmenu', e => e.preventDefault());
   $('blackBtn').onclick = enterBlack;
 
+  $('ver').textContent = 'verzia ' + (self.APP_VERSION || '–');
   // ---------- PWA: inštalácia + service worker ----------
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));

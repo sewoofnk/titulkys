@@ -1,9 +1,9 @@
 // Service worker: aplikácia + lokálne kópie Tesseractu fungujú aj bez CDN.
-// Pri zmene súborov zvýš VERSION, aby sa stará cache zahodila.
-const VERSION = 'v4';
-const CACHE = 'titulky-' + VERSION;
+// Verzia sa berie z version.js (zvyšuje sa automaticky pri každom commite), takže sa stará cache zahodí sama.
+importScripts('version.js');
+const CACHE = 'titulky-' + self.APP_VERSION;
 const CORE = [
-  './', 'index.html', 'manifest.webmanifest',
+  './', 'index.html', 'version.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png',
 ];
 const VENDOR = [
