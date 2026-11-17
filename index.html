@@ -722,10 +722,13 @@
   function extractText(data) {
     let lines;
     if (data.lines && data.lines.length) {
-      lines = data.lines.map(line =>
-        // neisté slovo zahoď len ak je krátke alebo nevyzerá ako slovo – inak by z vety ostal útržok
-        (line.words || []).filter(w => w.confidence >= S.minConf ||
-          (letters(w.text) >= 3 && /[aeiouyáéíóúý]/i.test(w.text) && w.confidence >= S.minConf / 2)).map(w => w.text).join(' '));
+      lines = data.lines.map(line => {
+        // v istom riadku nechaj aj menej isté slová (inak by z vety ostal útržok), v neistom iba isté
+        const ws = line.words || [];
+        const avg = ws.reduce((n, w) => n + w.confidence, 0) / (ws.length || 1);
+        const min = avg >= S.minConf ? S.minConf / 2 : S.minConf;
+        return ws.filter(w => w.confidence >= min).map(w => w.text).join(' ');
+      });
     } else {
       lines = String(data.text || '').split('\n');
     }
