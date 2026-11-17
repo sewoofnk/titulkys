@@ -140,7 +140,19 @@
       </select>
     </div>
     <div class="row">
-      <label>Hlas</label>
+      <label>Hlasový engine</label>
+      <select id="engine">
+        <option value="neural">Neurónový (cloud)</option>
+        <option value="system">Systémový (telefón)</option>
+      </select>
+    </div>
+    <div class="row" id="nvoiceRow">
+      <label>Neurónový hlas</label>
+      <select id="nvoice"></select>
+      <div class="note" id="nNote"></div>
+    </div>
+    <div class="row">
+      <label>Systémový hlas</label>
       <select id="voice"></select>
       <div class="note" id="voiceNote"></div>
     </div>
@@ -183,7 +195,7 @@
   // ---------- nastavenia ----------
   const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 700,
     ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
-    fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0' };
+    fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', autoBlack: '0', engine: 'neural', nvoice: '' };
   let S = { ...DEF };
   try { Object.assign(S, JSON.parse(localStorage.getItem('titulky-set') || '{}')); } catch (e) {}
   const save = () => { try { localStorage.setItem('titulky-set', JSON.stringify(S)); } catch (e) {} };
@@ -205,11 +217,12 @@
       save();
     });
   });
-  ['mode', 'ocrLang', 'target', 'blackStyle', 'autoBlack'].forEach(k => {
+  ['mode', 'ocrLang', 'target', 'blackStyle', 'autoBlack', 'engine'].forEach(k => {
     $(k).value = S[k];
     $(k).addEventListener('change', async () => {
       S[k] = $(k).value; save();
-      if (k === 'target') { S.voice = ''; save(); fillVoices(); cache.clear(); }
+      if (k === 'engine') { stopAll(); paintEngine(); }
+      if (k === 'target') { S.voice = ''; S.nvoice = ''; save(); fillVoices(); fillNVoices(); cache.clear(); }
       if (k === 'ocrLang' && running) { await initOCR(); }
     });
   });
@@ -555,8 +568,94 @@
     lastSpoken = text;
     synth.speak(u);
   }
-  function speak(text) {
-    if (!S.speak || !synth || !text) return;
+  // ---------- neurónový hlas (Azure cez /api/tts) ----------
+  const NVOICES = {
+    sk: [['sk-SK-LukasNeural', 'Lukáš (muž)'], ['sk-SK-ViktoriaNeural', 'Viktória (žena)']],
+    cs: [['cs-CZ-AntoninNeural', 'Antonín (muž)'], ['cs-CZ-VlastaNeural', 'Vlasta (žena)']]
+  };
+  const audio = new Audio();
+  audio.preload = 'auto';
+  let nTok = 0, nBusy = false, nPending = null, nResolve = null, neuralOffUntil = 0;
+
+  function monthChars() {
+    const m = new Date().toISOString().slice(0, 7);
+    try { const o = JSON.parse(localStorage.getItem('titulky-chars') || '{}'); return o.m === m ? o.n : 0; } catch (e) { return 0; }
+  }
+  function addChars(n) {
+    const m = new Date().toISOString().slice(0, 7);
+    try { localStorage.setItem('titulky-chars', JSON.stringify({ m, n: monthChars() + n })); } catch (e) {}
+    paintEngine();
+  }
+  function fillNVoices() {
+    const sel = $('nvoice'), list = NVOICES[S.target] || NVOICES.sk;
+    sel.innerHTML = '';
+    list.forEach(([v, n]) => { const o = document.createElement('option'); o.value = v; o.textContent = n; sel.appendChild(o); });
+    sel.value = list.some(x => x[0] === S.nvoice) ? S.nvoice : list[0][0];
+    S.nvoice = sel.value;
+  }
+  $('nvoice').addEventListener('change', () => { S.nvoice = $('nvoice').value; save(); });
+  function paintEngine() {
+    $('nvoiceRow').hidden = S.engine !== 'neural';
+    $('nNote').textContent = 'Spotrebované znaky tento mesiac: ' + monthChars().toLocaleString('sk-SK') +
+      '. Ak cloud hlas zlyhá alebo trvá dlhšie ako 3 s, použije sa systémový.';
+  }
+  function stopNeural() {
+    nTok++; nPending = null; nBusy = false;
+    try { audio.pause(); } catch (e) {}
+    if (nResolve) { nResolve(); nResolve = null; }
+  }
+  function stopAll() {
+    stopNeural();
+    pendingText = null; currentUtt = null;
+    if (synth) synth.cancel();
+  }
+  async function speakNeural(text) {
+    if (nBusy) {
+      if (S.interrupt) stopNeural(); else { nPending = text; return; }
+    }
+    const tok = ++nTok; nBusy = true;
+    try {
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), 3000);
+      let blob;
+      try {
+        const r = await fetch('/api/tts', {
+          method: 'POST', signal: ac.signal, headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ text, voice: S.nvoice, rate: S.rate, pitch: 0 })
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        blob = await r.blob();
+      } finally { clearTimeout(to); }
+      if (tok !== nTok) return;
+      addChars(text.length);
+      const url = URL.createObjectURL(blob);
+      audio.src = url;
+      await audio.play();
+      await new Promise(res => { nResolve = res; audio.onended = audio.onerror = () => res(); });
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      if (tok === nTok) {
+        neuralOffUntil = performance.now() + 30000; // 30 s nezdržuj ďalšími pokusmi
+        setStatus('Neurónový hlas nedostupný – používam systémový.', 'warn');
+        sayNow(text);
+      }
+    } finally {
+      if (tok === nTok) {
+        nBusy = false;
+        if (nPending) { const p = nPending; nPending = null; speakNeural(p); }
+      }
+    }
+  }
+  function useNeural() { return S.engine === 'neural' && performance.now() > neuralOffUntil; }
+  function replay(text) {
+    stopAll();
+    setTimeout(() => speak(text, true), 60);
+  }
+
+  function speak(text, force) {
+    if ((!S.speak && !force) || !text) return;
+    if (useNeural()) { speakNeural(text); return; }
+    if (!synth) return;
     if (synth.speaking || synth.pending || currentUtt) {
       if (S.interrupt) {
         pendingText = null; currentUtt = null; synth.cancel();
@@ -569,6 +668,19 @@
     sayNow(text);
   }
   function unlockSpeech() {
+    // odomknutie zvuku (iPhone): krátke ticho cez <audio>
+    try {
+      const n = 800, b = new ArrayBuffer(44 + n), v = new DataView(b);
+      const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+      w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true);
+      v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+      w(36, 'data'); v.setUint32(40, n, true);
+      for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
+      const url = URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+      audio.src = url;
+      audio.play().then(() => {}, () => {}).finally(() => setTimeout(() => URL.revokeObjectURL(url), 2000));
+    } catch (e) {}
     if (!synth) return;
     try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth.speak(u); } catch (e) {}
   }
@@ -581,26 +693,27 @@
   paintVoiceBtn();
   voiceBtn.onclick = () => {
     S.speak = !S.speak; save(); paintVoiceBtn();
-    if (!S.speak && synth) { pendingText = null; currentUtt = null; synth.cancel(); }
+    if (!S.speak) stopAll();
   };
   $('repeatBtn').onclick = () => {
     const t = $('main').textContent;
-    if (t && t !== '—' && synth) { pendingText = null; currentUtt = null; synth.cancel(); setTimeout(() => sayNow(t), 60); }
+    if (t && t !== '—') replay(t);
   };
   $('testBtn').onclick = () => {
-    if (!synth) return;
-    pendingText = null; currentUtt = null; synth.cancel();
-    setTimeout(() => sayNow(S.target === 'sk'
+    unlockSpeech();
+    neuralOffUntil = 0;
+    replay(S.target === 'sk'
       ? 'Ahoj, takto budem čítať titulky z hry.'
-      : 'Ahoj, takhle budu číst titulky ze hry.'), 60);
+      : 'Ahoj, takhle budu číst titulky ze hry.');
   };
+  fillNVoices(); paintEngine();
 
   // ---------- história ----------
   function addHistory(orig, tr) {
     const li = document.createElement('li');
     li.textContent = tr;
     const sm = document.createElement('small'); sm.textContent = orig; li.appendChild(sm);
-    li.onclick = () => { if (synth) { pendingText = null; currentUtt = null; synth.cancel(); setTimeout(() => sayNow(tr), 60); } };
+    li.onclick = () => replay(tr);
     const h = $('hist'); h.prepend(li);
     while (h.children.length > 40) h.lastChild.remove();
   }
