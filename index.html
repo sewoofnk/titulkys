@@ -127,7 +127,8 @@
       <select id="voice"></select>
       <div class="note" id="voiceNote"></div>
     </div>
-    <div class="row"><label>Rýchlosť reči <b id="rateV"></b></label><input type="range" id="rate" min="0.7" max="1.8" step="0.05"></div>
+    <div class="row"><label>Rýchlosť reči <b id="rateV"></b></label><input type="range" id="rate" min="0.7" max="2.5" step="0.05"></div>
+    <label class="chk"><input type="checkbox" id="catchUp"> Zrýchliť čítanie, keď nestíha (čaká ďalší titulok)</label>
     <label class="chk"><input type="checkbox" id="interrupt"> Nový titulok preruší starý (inak počká)</label>
     <button id="testBtn">🔈 Vyskúšať hlas</button>
   </div>
@@ -278,9 +279,9 @@
 
   // ---------- nastavenia ----------
   const DEF = { top: 72, height: 20, left: 4, width: 92, thr: 175, mode: 'auto', interval: 500,
-    ocrLang: 'eng', target: 'sk', voice: '', rate: 1.05, speak: true, interrupt: false,
+    ocrLang: 'eng', target: 'sk', voice: '', rate: 1.25, speak: true, interrupt: false,
     fs: 26, stable: 2, minConf: 50, skipSame: true, blackStyle: 'black', blackSubs: false, autoBlack: '0', engine: 'google', nvoice: '',
-    translator: 'ai', vision: false, glossary: '', corners: null, srcLang: '' };
+    translator: 'ai', vision: false, glossary: '', corners: null, srcLang: '', catchUp: true };
   let S = { ...DEF };
   try { Object.assign(S, JSON.parse(localStorage.getItem('titulky-set') || '{}')); } catch (e) {}
   if (S.blackStyle === 'dim') { S.blackStyle = 'black'; S.blackSubs = true; }   // staré „tlmené titulky“
@@ -324,6 +325,8 @@
   $('glossary').addEventListener('input', () => { S.glossary = $('glossary').value.slice(0, 2000); save(); cache.clear(); });
   $('skipSame').checked = S.skipSame;
   $('skipSame').addEventListener('change', () => { S.skipSame = $('skipSame').checked; save(); });
+  $('catchUp').checked = S.catchUp;
+  $('catchUp').addEventListener('change', () => { S.catchUp = $('catchUp').checked; save(); });
   $('interrupt').checked = S.interrupt;
   $('interrupt').addEventListener('change', () => { S.interrupt = $('interrupt').checked; save(); });
 
@@ -769,20 +772,55 @@
       if (t.length > candidate.length) candidate = t;
     } else {
       candidate = t; candHits = 1;
-      // nový text: preklad začni hneď, po potvrdení už bude hotový
-      if (!lastAccepted || sim(lastAccepted, t) < 0.7) translate(t).catch(() => {});
+      // nový text: preklad (aj zvuk) začni hneď, po potvrdení už bude hotový
+      const d = newPart(lastAccepted, t);
+      if (d && isNew(lastAccepted, t, d)) prefetch(d);
     }
-    if (candHits >= S.stable && (!lastAccepted || sim(lastAccepted, candidate) < 0.7)) {
-      lastAccepted = candidate;
-      accept(candidate);
+    if (candHits >= S.stable) {
+      const d = newPart(lastAccepted, candidate);
+      if (d && isNew(lastAccepted, candidate, d)) {
+        lastAccepted = candidate;
+        accept(d, candidate);
+      }
     }
   }
 
-  async function accept(orig) {
+  // ---------- posúvajúce sa riadky: čítaj iba nové slová ----------
+  // Príklad: predtým „A B“, teraz „B C“ (druhý riadok sa posunul hore) → nové je iba „C“.
+  const splitW = x => x.split(/\s+/).filter(Boolean);
+  const normW = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  function newPart(prev, cur) {
+    if (!prev) return cur;
+    const P = splitW(prev).map(normW).filter(Boolean);
+    const Cw = splitW(cur), C = Cw.map(normW);
+    for (let k = Math.min(P.length, C.length); k >= 2; k--) {   // najdlhší prekryv: koniec starého = začiatok nového
+      const tol = Math.floor(k / 4);
+      let miss = 0;
+      for (let i = 0; i < k && miss <= tol; i++) {
+        const a = P[P.length - k + i], b = C[i];
+        if (a !== b && sim(a, b) < 0.7) miss++;
+      }
+      if (miss <= tol) return Cw.slice(k).join(' ').trim();
+    }
+    return cur;
+  }
+  // je to naozaj nový titulok (alebo pribudli slová)?
+  function isNew(prev, cur, d) {
+    if (!prev) return true;
+    if (d !== cur) return splitW(d).filter(w => normW(w).length > 1).length >= 1 && plausibleWords(d);
+    return sim(prev, cur) < 0.7;
+  }
+  const plausibleWords = d => (d.match(/\p{L}/gu) || []).length >= 3;
+  function prefetch(text) {
+    translate(text).then(r => { if (r && !r.skip && r.tr && cloudKind() === 'google') gttsBlob(r.tr).catch(() => {}); }).catch(() => {});
+  }
+
+  async function accept(orig, full) {
     const id = ++seq;
     const res = await translate(orig);
     if (res.skip) return;                 // AI: nezmysel z OCR
     const tr = res.tr, shown = res.fixed || orig;
+    if (full && full !== orig) $('orig').title = full;
     ctxHist.push(shown); if (ctxHist.length > 5) ctxHist.shift();
     addHistory(shown, tr);
     if (id !== seq) return; // medzitým prišiel novší titulok
@@ -938,16 +976,16 @@
     return voices.find(v => v.name === name) || null;
   }
   let lastSay = null;
-  function sayNow(text) {
+  function sayNow(text, fast) {
     const u = new SpeechSynthesisUtterance(text);
     const v = pickVoice();
     if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = S.target === 'sk' ? 'sk-SK' : 'cs-CZ'; }
-    u.rate = Math.max(0.1, Math.min(10, S.rate)); u.pitch = 1; u.volume = 1;
+    u.rate = Math.max(0.1, Math.min(10, S.rate * (fast ? 1.3 : 1))); u.pitch = 1; u.volume = 1;
     u.onend = u.onerror = ev => {
       if (ev && ev.error && ev.error !== 'canceled' && ev.error !== 'interrupted') setStatus('Chyba hlasu: ' + ev.error, 'err');
       if (currentUtt !== u) return;
       currentUtt = null;
-      if (pendingText) { const p = pendingText; pendingText = null; sayNow(p); }
+      if (pendingText) { const p = pendingText; pendingText = null; sayNow(p, S.catchUp); }
     };
     let started = false;
     u.onstart = () => { started = true; if (/Skúšam hlas|nespustil/.test($('status').textContent)) setStatus('Hovorím: ' + (u.voice ? u.voice.name : u.lang)); };
@@ -1009,9 +1047,14 @@
     pendingText = null; currentUtt = null;
     return hushSynth();
   }
-  async function speakNeural(text) {
+  async function speakNeural(text, fromQueue) {
     if (nBusy) {
-      if (S.interrupt) stopNeural(); else { nPending = text; return; }
+      if (S.interrupt) stopNeural();
+      else {
+        nPending = text;
+        if (S.catchUp) try { audio.playbackRate = Math.min(2.5, Math.max(audio.playbackRate, S.rate * 1.4)); } catch (e) {}
+        return;
+      }
     }
     const tok = ++nTok; nBusy = true;
     const kind = cloudKind() || 'google';
@@ -1026,9 +1069,13 @@
               method: 'POST', signal: ac.signal, headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ text, voice: S.nvoice, rate: S.rate, pitch: 0 })
             })
-          : await fetch('/api/gtts?tl=' + S.target + '&q=' + encodeURIComponent(text.slice(0, 600)), { signal: ac.signal });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        blob = await r.blob();
+          : null;
+        if (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          blob = await r.blob();
+        } else {
+          blob = await Promise.race([gttsBlob(text), new Promise((_, rej) => ac.signal.addEventListener('abort', () => rej(new Error('časový limit'))))]);
+        }
         if (!blob.size || !/audio|mpeg|octet/.test(blob.type || 'audio')) throw new Error('nie je zvuk');
       } finally { clearTimeout(to); }
       if (tok !== nTok) return;
@@ -1036,7 +1083,8 @@
       const url = URL.createObjectURL(blob);
       audio.src = url;
       try { audio.preservesPitch = true; audio.webkitPreservesPitch = true; } catch (e) {}
-      audio.playbackRate = kind === 'neural' ? 1 : Math.max(0.5, Math.min(2, S.rate));
+      const behind = S.catchUp && fromQueue;
+      audio.playbackRate = (kind === 'neural' ? 1 : Math.max(0.5, Math.min(2.5, S.rate))) * (behind ? 1.25 : 1);
       await audio.play();
       if (/Skúšam hlas/.test($('status').textContent)) setStatus('Hovorím: ' + (kind === 'neural' ? 'neurónový hlas' : 'Google hlas'));
       await new Promise(res => { nResolve = res; audio.onended = audio.onerror = () => res(); });
@@ -1059,9 +1107,21 @@
       if (tok === nTok) {
         nBusy = false;
         if (retry) speakNeural(retry);
-        else if (nPending) { const p = nPending; nPending = null; speakNeural(p); }
+        else if (nPending) { const p = nPending; nPending = null; speakNeural(p, true); }
       }
     }
+  }
+  // Google hlas: MP3 sa sťahuje vopred (pri preklade) a drží sa v pamäti
+  const gttsCache = new Map();
+  function gttsBlob(text) {
+    const key = S.target + '|' + text;
+    if (gttsCache.has(key)) return gttsCache.get(key);
+    const p = fetch('/api/gtts?tl=' + S.target + '&q=' + encodeURIComponent(text.slice(0, 600)))
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); });
+    p.catch(() => gttsCache.delete(key));
+    gttsCache.set(key, p);
+    if (gttsCache.size > 40) gttsCache.delete(gttsCache.keys().next().value);
+    return p;
   }
   let neuralReady = null;   // null = ešte nevieme, true/false podľa servera
   let gttsOffUntil = 0;

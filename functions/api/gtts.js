@@ -4,7 +4,7 @@
 
 const LANGS = new Set(['sk', 'cs']);
 const MAX_CHARS = 600;
-const RATE_LIMIT = 60;
+const RATE_LIMIT = 150;
 const hits = new Map();
 
 const json = (o, status) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
