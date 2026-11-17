@@ -1,3 +1,4 @@
 vendor/** -text
 *.png binary
 *.gz binary
+.githooks/* text eol=lf
