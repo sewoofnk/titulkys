@@ -27,11 +27,21 @@ async function sha256(str) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// povoľ len požiadavky z vlastnej domény (rovnaký pôvod)
+function sameOrigin(request) {
+  const h = request.headers;
+  if (h.get('Sec-Fetch-Site') === 'same-origin') return true;
+  const hosts = new Set([new URL(request.url).host, h.get('Host'), h.get('X-Forwarded-Host')].filter(Boolean));
+  for (const v of [h.get('Origin'), h.get('Referer')]) {
+    if (!v) continue;
+    try { if (hosts.has(new URL(v).host)) return true; } catch (e) {}
+  }
+  return false;
+}
+
 export async function onRequestPost({ request, env }) {
   // povoľ len vlastnú doménu
-  const origin = request.headers.get('Origin');
-  const host = new URL(request.url).host;
-  if (!origin || new URL(origin).host !== host) return json({ error: 'forbidden' }, 403);
+  if (!sameOrigin(request)) return json({ error: 'forbidden origin' }, 403);
 
   if (!env.AZURE_KEY || !env.AZURE_REGION) return json({ error: 'not configured' }, 503);
 

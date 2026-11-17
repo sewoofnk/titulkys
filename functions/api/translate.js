@@ -85,9 +85,20 @@ function parseJson(t) {
   };
 }
 
+// povoľ len požiadavky z vlastnej domény (rovnaký pôvod)
+function sameOrigin(request) {
+  const h = request.headers;
+  if (h.get('Sec-Fetch-Site') === 'same-origin') return true;
+  const hosts = new Set([new URL(request.url).host, h.get('Host'), h.get('X-Forwarded-Host')].filter(Boolean));
+  for (const v of [h.get('Origin'), h.get('Referer')]) {
+    if (!v) continue;
+    try { if (hosts.has(new URL(v).host)) return true; } catch (e) {}
+  }
+  return false;
+}
+
 export async function onRequestPost({ request, env }) {
-  const origin = request.headers.get('Origin');
-  if (!origin || new URL(origin).host !== new URL(request.url).host) return json({ error: 'forbidden' }, 403);
+  if (!sameOrigin(request)) return json({ error: 'forbidden origin' }, 403);
   if (!env.AI_KEY) return json({ error: 'not configured' }, 503);
 
   let b;
